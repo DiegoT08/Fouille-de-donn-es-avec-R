@@ -1,0 +1,756 @@
+---
+title: "<FONT color='#0066CC'><FONT size = 4 ><DIV align= center> AP-4209 ESIEE-Paris: 2024 - 2025 </DIV></FONT></FONT>"
+output:
+  html_document:
+    highlight: textmate
+    theme: readable
+    toc: yes
+    toc_depth: 6
+    toc_float: yes
+---
+
+
+<style type="text/css">
+body, td {font-size: 15px;}
+code.r{font-size: 5px;}
+pre { font-size: 12px;}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r manova_fun, echo=FALSE}
+MANOVA <- function(df, group_col) {
+  Y <- as.factor(df[[group_col]])
+  X <- df[, which(sapply(df, is.numeric)), drop = FALSE]
+  
+  N <- nrow(X)
+  P <- ncol(X)
+  K <- length(levels(Y))
+  
+  XK <- split(X, Y)
+  NK <- sapply(XK, nrow)
+  GK <- lapply(XK, colMeans)
+  G  <- colMeans(X)
+  
+  X_mat <- as.matrix(X)
+  G_mat <- matrix(G, nrow = N, ncol = P, byrow = TRUE)
+  SS_tot <- t(X_mat - G_mat) %*% (X_mat - G_mat)
+  
+  SS_partiel_Intra <- lapply(names(XK), function(gr) {
+    Xk_mat <- as.matrix(XK[[gr]])
+    Gk <- GK[[gr]]
+    Gk_mat <- matrix(Gk, nrow = nrow(Xk_mat), ncol = P, byrow = TRUE)
+    t(Xk_mat - Gk_mat) %*% (Xk_mat - Gk_mat)
+  })
+  names(SS_partiel_Intra) <- names(XK)
+  
+  SS_Intra <- Reduce("+", SS_partiel_Intra)
+  SS_Inter <- SS_tot - SS_Intra
+  
+  Lambda <- det(SS_Intra) / det(SS_tot)
+  chi2_corr <- - (N - 1 - (P + K)/2) * log(Lambda)
+  ddl <- P * (K - 1)
+  p_value <- 1 - pchisq(chi2_corr, df = ddl)
+  
+  out <- list(
+    SS_tot = SS_tot,
+    SS_Intra = SS_Intra,
+    SS_Inter = SS_Inter,
+    GK = GK,
+    G = G,
+    NK = NK,
+    P = P,
+    N = N,
+    Lambda = Lambda,
+    p_value = p_value
+  )
+  return(out)
+}
+```
+
+<FONT color='#0066CC'><FONT size = 4 >
+
+::: {align="center"}
+Fouille de données avec R pour la data science et l'intelligence artificielle\
+
+III.TD 3 : Partie II - ANALYSE FACTORIELLE DISCRIMINANTE
+:::
+
+</FONT></FONT>
+
+<FONT color='#0066CC'><FONT size = 4 >
+
+::: {align="center"}
+Badr TAJINI -- ESIEE Paris\
+Source : Bertrand Roudier -- ESIEE Paris
+:::
+
+</FONT></FONT>
+
+<hr style="border: 1px  solid gray">
+
+</hr>
+
+<DIV align = justify>
+
+### <FONT color='#0066CC'><FONT size = 4> 1. Introduction </FONT></FONT>
+
+Ce TD a pour objectif de réaliser une analyse factorielle discriminante nous permettant : 
+
+ * à l'aide d'une diminution de dimentionnalité, de visualiser les données dans le plan des axes facoriels (cf.cours)
+ * d'effectuer, pour chaque axe, une inférence statistique qui permet de tester la discrimination des différentes classes projetées. 
+ 
+ Au total, l'AFD  est analogue à une MANOVA, nous permettant de réaliser, de manière concomitante, une visualisation des données.
+ 
+ Pour y parvenir, nous utiliserons le jeu de données *VIN_QUALITE.txt*
+ 
+<br>
+
+<hr style="border: 1px  solid gray">
+
+### <FONT color='#0066CC'><FONT size = 4> 2. Prés-Requis </FONT></FONT>
+
+* Nous chargeons le fichier *VIN_QUALITE.txt*
+* Nous utilisons la fonction que nous avons développée lors du précédant TP pour calculer les sommes des carrés totaux, inter et intra.
+
+<br>
+
+```{r, echo = T, warning=F, message=F}
+# à compléter
+
+library(ggplot2)
+library(dplyr)
+
+```
+
+```{r}
+# à compléter
+
+vin <- read.table("VIN_QUALITE.txt", header = TRUE, stringsAsFactors = FALSE)
+head(vin)
+
+```
+
+
+```{r}
+
+# à compléter
+
+Y <- factor(vin$Qualite)
+
+X <- vin %>% select(-TP, -Qualite)
+
+df_manova <- data.frame(X, Qualite = Y)
+
+# ta fonction MANOVA doit être disponible dans ce Rmd
+res_m <- MANOVA(df_manova, "Qualite")
+
+SS_tot   <- res_m$SS_tot
+SS_intra <- res_m$SS_Intra
+SS_inter <- res_m$SS_Inter
+
+N <- res_m$N
+P <- res_m$P
+K <- length(levels(Y))
+
+
+```
+
+Les résultats sont les suivants:  
+
+* La somme des carrés totaux :  *SS <SUB>Tot</SUB>*
+
+```{r}
+# à compléter
+
+SS_tot
+
+```
+
+<br> 
+
+* La somme des carrés intra : *SS <SUB>Intra</SUB>*
+
+```{r}
+# à compléter
+
+SS_intra
+
+```
+
+
+<br> 
+
+* La somme des carrés inter : *SS <SUB>Inter</SUB>*
+
+```{r}
+# à compléter
+
+SS_inter
+
+```
+
+
+<br>
+
+<hr style="border: 1px  solid gray">
+
+### <FONT color='#0066CC'><FONT size = 4> 3. Analyse Factorielle Discriminante </FONT></FONT>
+
+#### <FONT color='#0066CC'><FONT size = 4> 3.1 Rappels </FONT></FONT>
+
+Comme nous l'avons vu en cours, l'analyse factorielle discriminante consiste à trouver une succession d'axes factoriels, tous orthogonaux entre eux et qui maximisent les projections des distances entre les groupes (cf. schéma suivant pour rappel)
+
+
+```{r, echo=FALSE, fig.width = 4, fig.height = 4, fig.align = 'center'}
+knitr::include_graphics('AFD_Axe_Facto.jpg')
+```
+
+<br> 
+
+Maximiser les distances entre les groupes revient à maximiser les projections suivantes :
+
+*  ${P_1} = {\max _u}\left( {\frac{{{u^t}Bu}}{{{u^t}Wu}}} \right)$ (école Anglo saxonne)
+
+ou bien 
+
+* ${P_2} = {\max _u}\left( {\frac{{{u^t}Bu}}{{{u^t}Wu}}} \right)$ (école Française)
+
+<br>
+
+Fort heureusement, les deux méthodes conduisent aux mêmes résultats. Cependant, les approches sont légèrement différentes. 
+
+* La méthode anglo-saxonne à un raisonnement analogue à la construction du test d'analyse de variance ou l'on teste le rapport Signal / Bruit (cf. cours page 11). Dans ce cadre, la projection des distances inter groupes est pondérée par les distances intra-groupes
+
+* La méthode française privilégie quant à elle la corrélation canonique c.a.d la part de variation liés au traitement (cf. cours page 11). Dans ce cadre, la projection des distances inter groupes est pondérée par la variation totale 
+
+Vous réaliserez une fonction permettant de réaliser une AFD selon la projection *P<SUB>1</SUB>* (méthode anglo saxonne). Pour y parvenir, nous allons décrire les différentes étapes avec les résultats intermédiaires.  
+
+<br> 
+
+<!---////////////////////////////////////////////////////////////////////////////--->
+#### <FONT color='#0066CC'><FONT size = 4> 3.2 Diagonalisation </FONT></FONT>
+
+<br>
+
+* Nous calculons la matrice du ratio :  
+
+
+  $\frac{B}{W} = \frac{{S{S_{{\rm{inter}}}}}}{{S{S_{{\rm{intra}}}}}} = B \times {W^{ - 1}} = S{S_{{\rm{inter}}}} \times SS_{{\rm{intra}}}^{ - 1}$ 
+
+
+Attention la fraction ici correspond à une *division matricielle* et non à une division élément par élément !
+
+Le résultat est le suivant : 
+```{r}
+# à compléter
+
+BW <- SS_inter %*% solve(SS_intra)
+BW
+
+```
+
+<br>
+
+Nous calculons maintenant les vecteurs directeurs *u* des axes factoriels et leur coefficient.
+De manière analogue à l'ACP, la maximisation de \[{P_1} = {\max _u}\left( {\frac{{{u^t}Bu}}{{{u^t}Wu}}} \right)\]
+revient à diagonaliser la matrice $S{S_{{\rm{inter}}}} \times SS_{{\rm{intra}}}^{ - 1}$. Les vecteurs propres correspondent alors aux vecteurs directeurs des axes factoriels. Ces derniers devront être cependant normalisés.   
+Comme en ACP, les valeurs propres correspondent à la part de dispersion expliquée par chaque axe.  
+
+ * La diagonalisation est réalisée à l'aide de la fonction *eigen()*
+
+ * *<U> remarque importante </U>* : Les algorithmes utilisés peuvent conduire à des matrices de vecteurs propres dont les éléments sont des complexes. *On ne retiendra donc que les parties réels en éliminant les parties complexes* (utiliser la fonction *Re*)
+
+<br> 
+
+
+##### <FONT color='#0066CC'><FONT size = 4> 3.2.1 Vecteurs directeurs </FONT></FONT>
+
+* Matrice des vecteurs propres *U*
+
+```{r}
+# à compléter
+
+eig <- eigen(BW)
+U <- Re(eig$vectors)
+U
+
+```
+
+
+<br>
+
+Contrairement à l'ACP où nous diagonalisons une matrice symétrique (matrice des variances covariances ou de corrélation), la matrice du ratio *B/W* n'est pas symétrique ce qui conduit à des résultats non exploitables car non normées. Pour y parvenir, nous normalisons la matrice des vecteurs propres :
+
+* Soit *U* la matrice des vecteurs propres: nous calculons *U <SUB> Norm </SUB>* tel que :
+
+ <DIV align = 'center'> ${U_{Norm}} = \frac{U}{{\sqrt {diag({U^t} \times W \times U)} }}$ </DIV>
+
+<br> 
+
+* la matrice de normalisation (dénominateur) est la suivante :
+
+```{r}
+
+# à compléter
+
+denom <- sqrt(diag(t(U) %*% SS_intra %*% U))
+denom
+
+```
+
+
+<br>
+
+* La matrice des vecteurs propres normalisées *Un* est:
+
+```{r}
+# à compléter
+
+Un <- sweep(U, 2, denom, "/")
+Un
+
+```
+
+
+<br> 
+
+##### <FONT color='#0066CC'><FONT size = 4> 3.2.2  Valeurs propres </FONT></FONT>
+
+  * Comme pour les vecteurs propres, nous éliminons la partie imaginaire. les valeurs sont les suivantes:    
+
+<br>
+
+
+```{r}
+# à compléter
+
+lambda <- Re(eig$values)
+lambda[abs(lambda) < 1e-7] <- 0
+lambda[lambda < 0 & abs(lambda) < 1e-7] <- 0
+lambda
+
+``` 
+
+  * De manière analogue à l'ACP, les valeurs propres correspondent à la variance expliquée par les axes. Les variances expliquées par les deux derniers axes sont égales à 0. Dans certains cas, les valeur propres peuvent être négatives (ce qui incohérent car il s'agit de variances!) et de très faible valeur (inférieures à 10-7). *Il s'agit d'une erreur de virgule flottante imputable aux calculs itératifs nécessaires à l'estimation des valeurs propres*. Dans ce contexte, on considère ces valeurs comme nulles.  
+
+<br>
+
+* la part de dispersion expliquée par les axes (inertie des axes) est calculée par l'expression suivante:  
+
+<DIV align = center>  ${I_i} = \frac{{{\lambda _i}}}{{\sum\limits_i {{\lambda _i}} }}$  </DIV>
+
+Les parts de dispersion sont les suivantes :
+
+```{r}
+# à compléter
+
+inertie_axes <- lambda / sum(lambda)
+inertie_axes
+
+```
+
+
+<br>
+
+Comme on peut le constater, le premier axe explique à lui seul prés de 96 % de la dispersion et le second 4% !. 
+
+<br>
+
+
+<!--///////////////////////////////////////////////////////////////////////////////////////////////-->
+#### <FONT color='#0066CC'><FONT size = 4> 3.3 Coordonnées des individus </FONT></FONT>
+<!--///////////////////////////////////////////////////////////////////////////////////////////////-->
+
+Le calcul des coordonnées des individus sur les axes factoriels (appelées *scores* en anglais) s'effectue en réalisant la projection des observations X **(centrées)** sur les axes factoriels. 
+Les scores sont simplement calculés comme suit :
+
+$Score = Z \times {U_{Norm}}$  
+
+Sachant que pour chaque variable *i* de *X* avec ${Z_j} = {X_j} - {{\bar X}_j}$, il suffit donc de multiplier les données centrées *Z* par *Unorm*
+
+Seuls les deux premiers axes factoriels sont à prendre en compte puisqu'ils représentent à eux seul l'intégralité de la dispersion et donc de "l'information contenu dans le tableau initial *Z*".
+
+Nous créons un data.frame *Scores_df* qui inclue les coordonnées des individus sur les deux premiers axes factoriels ainsi que les différentes classes auxquelles ils appartiennent (variable 'Class'). On prendra soin de bien vérifier que l'entête de la variable (nom de la variable) soit égale à *'Class'*
+
+<br>
+
+```{r, echo = F}
+# à compléter
+
+Z <- scale(as.matrix(X), center = TRUE, scale = FALSE)
+Scores <- Z %*% Un
+
+Scores_df <- data.frame(
+  Axe1 = Scores[, 1],
+  Axe2 = Scores[, 2],
+  Class = Y
+)
+head(Scores_df)
+
+```
+
+
+```{r, echo = F}
+# à compléter
+
+Scores_df
+
+```
+
+<br> 
+
+Nous utilisons la fonction *AFD_graph1*  (fournie ci dessous) pour représenter les individus dans le plan factoriel. Les couleurs permettent de différentier les classes. les losanges représentent le centre de gravité des différentes classes
+
+<br>
+
+```{r afd_graph_fun, echo=FALSE}
+AFD_graph1 <- function(Scores_df,
+                       axis1 = 1, axis2 = 2,
+                       title = "AFD - plan factoriel") {
+
+  stopifnot("Class" %in% names(Scores_df))
+
+  num_cols <- names(Scores_df)[sapply(Scores_df, is.numeric)]
+  xcol <- num_cols[axis1]
+  ycol <- num_cols[axis2]
+
+  centers <- aggregate(
+    Scores_df[, c(xcol, ycol)],
+    by = list(Class = Scores_df$Class),
+    FUN = mean
+  )
+
+  plot(Scores_df[[xcol]], Scores_df[[ycol]],
+       col = as.numeric(Scores_df$Class),
+       pch = 19,
+       xlab = xcol,
+       ylab = ycol,
+       main = title)
+
+  legend("topright",
+         legend = levels(Scores_df$Class),
+         col = seq_along(levels(Scores_df$Class)),
+         pch = 19)
+
+  points(centers[[xcol]], centers[[ycol]],
+         pch = 23, bg = "black", cex = 1.5)
+}
+```
+
+
+```{r, echo = T}
+# à compléter
+
+AFD_graph1(Scores_df)
+
+
+```
+
+```{r}
+# à compléter
+
+ggplot(Scores_df, aes(x = Axe1, y = Axe2, color = Class)) +
+  geom_point(size = 2) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 4) +
+  theme_minimal()
+
+```
+
+
+
+<br>
+
+#### <FONT color='#0066CC'><FONT size = 4> 3.4 Inférence statistique </FONT></FONT>
+
+Nous effectuons un test de Wilks. En analyse factorielle discriminante, il s'agit de tester successivement le caractère discriminant des axes vis à vis des différentes classes.
+
+<br> 
+
+Pour y parvenir, nous calculons les corrélations canoniques de chaque axe. Soit $\rho$, la valeur propre associée à chaque axe, la corrélation canonique est :
+  
+ \[{\eta ^2} = \frac{\rho }{{1 + \rho }}\]
+
+les corrélations canoniques des deux premiers axes sont:  
+```{r}
+# à compléter
+
+eta2 <- lambda / (1 + lambda)
+eta2[1:2]
+
+```
+
+Dans ce TD, nous allons simplifier les hypothèses. Sous Ho, nous posons que les corrélations canoniques des axes factoriels retenus sont égales à zero *versus* H1: au moins une des corrélations différent.  
+
+Le test est le suivant:  
+
+<br>
+
+\[\left\{ \begin{array}{l}
+{H_0}:\eta _{{\rm{axe 1}}}^2 = \eta _{{\rm{axe 2}}}^2 = 0\\
+{H_1}:{\rm{ }}\eta _{{\rm{axe 1}}}^2{\rm{ et / ou  }}\eta _{{\rm{axe 2}}}^2 \ne 0
+\end{array} \right.\]
+
+<br>
+
+Nous calculons la quantité de Wilks $Wilks = {\Lambda _i} = \prod\limits_{i = 1}^2 {(1 - \lambda _i^2)}$
+
+  * rmq : Pour la calculer, on utilisera la fonction *cumsum()*
+
+<br> 
+
+La quantité suivante suit une distribution de Chi-deux
+
+\[ - \left( {n - 1 - \frac{{p + k}}{2}} \right)\log (\Lambda ) \to \chi _{p(k - 1)ddl}^2\]  
+
+avec:
+
+  * n: le nombre total d'observations  
+  * p: le nombre de variables
+  * k: le nombre de classes
+
+<br> 
+
+Pour les deux premiers axes retenus *(axe_selected = 2)*, L'ensemble des résultats de l'ADF sont résumés dans le tableau :
+
+```{r}
+# à compléter
+
+axe_selected <- 2
+
+wilks_tbl <- data.frame(
+  Axe = 1:axe_selected,
+  Lambda = NA_real_,
+  Chi2 = NA_real_,
+  ddl = NA_integer_,
+  p_value = NA_real_
+)
+
+for (i in 1:axe_selected) {
+  Lambda_i <- prod(1 - eta2[i:axe_selected])
+  Chi2_i   <- - (N - 1 - (P + K)/2) * log(Lambda_i)
+  ddl_i    <- (P - i + 1) * (K - 1)
+  p_i      <- 1 - pchisq(Chi2_i, df = ddl_i)
+
+  wilks_tbl$Lambda[i]  <- Lambda_i
+  wilks_tbl$Chi2[i]    <- Chi2_i
+  wilks_tbl$ddl[i]     <- ddl_i
+  wilks_tbl$p_value[i] <- p_i
+}
+
+wilks_tbl
+
+
+```
+
+<br>
+
+Les résultats précédents montrent que les  deux axes discriminent parfaitement les classes (les probas associées à la discrimination sur chaque axe étant proche de zéro). *Attention cela ne prédispose pas de la classification de chaque individus dans les différentes groupes* (ce que nous verrons au prochains TD (TD final)).
+
+### <FONT color='#0066CC'><FONT size = 4> 4. Encapsulation du code </FONT></FONT>
+
+Pour rappel, l'AFD est une méthode de classification supervisée. Le présent TD nous a permis de développer des scripts permettant:   
+
+<br>
+
+  * De calculer les axes factoriels relatives aux projections du compromis B/W  
+  
+  * De positionner les individus dans le plan factoriel ce qui permet de visualiser les positions des individus et des groupes les uns par rapport aux autres  
+  
+  * De tester la qualité de la projection et de la discrimination des groupes sur les axes factoriels    
+
+<br>
+
+Dans notre exemple, la qualité de discrimination des différents groupes selon les axes est excellente.
+
+Le prochain TD aura pour objectif d'utiliser les coordonnées des observations dans le plan factoriel pour réaliser un classifieur supervisée dont nous testerons la qualité à l'aide d'une matrice des confusions.
+
+<br>
+
+Remarque :  En cas de *non* discrimination des classes par les axes factoriels (acceptation de Ho et rejet de  H1), il est évident qu'il n'est pas possible d'utiliser les projections des individus sur les axes factoriels pour réaliser un classifieur. Dans ce cas, la classification supervisée n'est pas réalisable par cette méthode
+
+Nous créons une fonction générique que  nous nommons *AFD*. Les arguments de la fonction sont les suivants : 
+
+  * AFD <- function(X,Y,SS_tot, SS_intra, SS_inter, nb_axes = 2)  
+    
+    - X et Y sont respectivement les variables prédictives et Y la variable à prédire    
+    
+    - SS_tot, SS_intra, SS_inter sont les sommes des carrés calculées à partir de la fonction *MANOVA* que vous avez développée  
+    
+    - nb_axes est le nombre d'axes sélectionné pour réaliser les projections. Par défaut, il est égal à 2 (projection dans un plan)  
+    
+Cette fonction retourne une liste dont les éléments sont les suivants (sous forme de data frame):  
+  
+  * les vecteurs propres normalisés (appelés aussi *loading factors* en anglais)  
+  
+  * les valeur propres  
+  
+  * les scores    
+  
+  * le tableau des résultats du test de Wilks  
+
+Le data frame des Scores calculés à partir da la fonction *AFD* corresppondent à l'argument de la fonction *AFD_graph1*
+
+Le script final (avec les résultats) doit être le suivant :
+
+```{r}
+# à compléter
+
+AFD <- function(X, Y, SS_tot, SS_intra, SS_inter, nb_axes = 2) {
+  Y <- factor(Y)
+  X_mat <- as.matrix(X)
+
+  N <- nrow(X_mat)
+  P <- ncol(X_mat)
+  K <- length(levels(Y))
+
+  BW <- SS_inter %*% solve(SS_intra)
+  eig <- eigen(BW)
+
+  U <- Re(eig$vectors)
+  lambda <- Re(eig$values)
+
+  lambda[abs(lambda) < 1e-7] <- 0
+  lambda[lambda < 0 & abs(lambda) < 1e-7] <- 0
+
+  denom <- sqrt(diag(t(U) %*% SS_intra %*% U))
+  Un <- sweep(U, 2, denom, "/")
+
+  Z <- scale(X_mat, center = TRUE, scale = FALSE)
+  Scores <- Z %*% Un
+
+  Scores_df <- data.frame(
+    Axe1 = Scores[, 1],
+    Axe2 = Scores[, 2],
+    Class = Y
+  )
+
+  eta2 <- lambda / (1 + lambda)
+
+  axe_selected <- nb_axes
+  wilks_tbl <- data.frame(
+    Axe = 1:axe_selected,
+    Lambda = NA_real_,
+    Chi2 = NA_real_,
+    ddl = NA_integer_,
+    p_value = NA_real_
+  )
+
+  for (i in 1:axe_selected) {
+    Lambda_i <- prod(1 - eta2[i:axe_selected])
+    Chi2_i   <- - (N - 1 - (P + K)/2) * log(Lambda_i)
+    ddl_i    <- (P - i + 1) * (K - 1)
+    p_i      <- 1 - pchisq(Chi2_i, df = ddl_i)
+
+    wilks_tbl$Lambda[i]  <- Lambda_i
+    wilks_tbl$Chi2[i]    <- Chi2_i
+    wilks_tbl$ddl[i]     <- ddl_i
+    wilks_tbl$p_value[i] <- p_i
+  }
+
+  list(
+    Un = Un,
+    lambda = lambda,
+    Scores_df = Scores_df,
+    wilks_tbl = wilks_tbl
+  )
+}
+
+
+```
+
+
+```{r, echo = T}
+# à compléter
+
+afd_res <- AFD(X, Y, SS_tot, SS_intra, SS_inter, nb_axes = 2)
+
+afd_res$Un
+afd_res$lambda
+head(afd_res$Scores_df)
+afd_res$wilks_tbl
+
+AFD_graph1(afd_res$Scores_df)
+
+
+```
+
+
+### <FONT color='#0066CC'><FONT size = 4> 5. Application </FONT></FONT>
+
+Pour valider votre fonction, vous utiliserez le fichier iris fourni par défaut en R.
+
+Les résultats sont les suivants :
+
+```{r}
+# à compléter
+
+data(iris)
+
+X_iris <- iris[, 1:4]
+Y_iris <- iris$Species
+
+res_m_iris <- MANOVA(data.frame(X_iris, Species = Y_iris), "Species")
+
+afd_iris <- AFD(
+  X_iris, Y_iris,
+  res_m_iris$SS_tot,
+  res_m_iris$SS_Intra,
+  res_m_iris$SS_Inter,
+  nb_axes = 2
+)
+
+afd_iris
+
+
+```
+
+
+* Matrice des vecteurs propres normalisées  
+
+```{r}
+# à compléter
+
+afd_iris$Un
+
+```
+
+<br> 
+
+* Vecteurs propres  
+
+```{r}
+# à compléter
+
+afd_iris$lambda
+
+```
+
+<br>
+
+* Scores  
+
+```{r}
+# à compléter
+
+head(afd_iris$Scores_df)
+
+```
+
+<br>
+
+* Tests MANOVA axes factoriels  
+
+```{r}
+# à compléter
+
+afd_iris$wilks_tbl
+
+```
+
+
+* Si vous trouvez les mêmes résultats c'est que vous avez bien travaillé !
+

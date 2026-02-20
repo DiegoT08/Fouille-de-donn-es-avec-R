@@ -1,0 +1,257 @@
+---
+title: "Projet 2 — Analyse factorielle discriminante (AFD) — Twitter Entity Sentiment Analysis"
+author: "TORRES Diego, WU Lucas"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+---
+
+# 1. Introduction
+
+Ce projet applique l’Analyse Factorielle Discriminante (AFD), via l’Analyse Discriminante Linéaire (LDA), sur le dataset **Twitter Entity Sentiment Analysis** afin de réduire la dimension des données textuelles et de visualiser le regroupement des tweets selon leur sentiment.  
+Les étapes suivies sont : chargement et exploration des données, pré-traitement du texte (URLs, caractères spéciaux, stopwords, stemming), extraction de caractéristiques (TF-IDF), réduction de dimension (SVD tronquée), AFD via LDA (MASS), visualisations, puis évaluation (accuracy + matrice de confusion + silhouette). Enfin, une visualisation de sujets (topic modeling) est ajoutée.
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+rm(list = ls())
+set.seed(42)
+
+# Miroir CRAN pour Rscript (non-interactif)
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+required <- c(
+  "rmarkdown","knitr",
+  "readr","dplyr","stringr","tidyr","ggplot2",
+  "text2vec","Matrix",
+  "MASS","caret","cluster","irlba",
+  "topicmodels","tm","SnowballC"
+)
+
+to_install <- required[!required %in% installed.packages()[,"Package"]]
+if(length(to_install) > 0) install.packages(to_install, dependencies = TRUE)
+
+invisible(lapply(required, library, character.only = TRUE))
+options(stringsAsFactors = FALSE)
+```
+
+# 2. Chargement des données
+
+```{r load-data}
+train_path <- "data/twitter_training.csv"
+valid_path <- "data/twitter_validation.csv"
+
+train_raw <- readr::read_csv(train_path, col_names = FALSE, show_col_types = FALSE)
+valid_raw <- readr::read_csv(valid_path, col_names = FALSE, show_col_types = FALSE)
+
+colnames(train_raw) <- c("id","entity","sentiment","tweet")
+colnames(valid_raw) <- c("id","entity","sentiment","tweet")
+
+train_raw <- train_raw %>% dplyr::filter(!is.na(tweet), !is.na(sentiment))
+valid_raw <- valid_raw %>% dplyr::filter(!is.na(tweet), !is.na(sentiment))
+
+head(train_raw, 5)
+```
+
+# 3. Exploration (EDA)
+
+```{r eda}
+dist_sent <- train_raw %>% dplyr::count(sentiment) %>% dplyr::arrange(desc(n))
+dist_sent
+
+ggplot2::ggplot(dist_sent, ggplot2::aes(x = reorder(sentiment, -n), y = n)) +
+  ggplot2::geom_col() +
+  ggplot2::theme_minimal() +
+  ggplot2::labs(title = "Distribution des sentiments (Train)", x = "Sentiment", y = "Nombre")
+
+train_raw %>%
+  dplyr::mutate(tweet_len = nchar(tweet)) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    mean_len = mean(tweet_len),
+    median_len = median(tweet_len),
+    p90 = quantile(tweet_len, 0.90)
+  )
+```
+
+# 4. Pré-traitement du texte
+
+```{r preprocessing}
+clean_tweet <- function(x){
+  x <- tolower(x)
+  x <- stringr::str_replace_all(x, "http\\S+|www\\S+", " ")
+  x <- stringr::str_replace_all(x, "@\\w+", " ")
+  x <- stringr::str_replace_all(x, "#\\w+", " ")
+  x <- stringr::str_replace_all(x, "[^a-z\\s]", " ")
+  x <- stringr::str_replace_all(x, "\\s+", " ")
+  x <- stringr::str_trim(x)
+  x
+}
+
+stop_words_en <- c(tm::stopwords("en"), "rt")
+
+remove_stopwords <- function(text){
+  w <- unlist(strsplit(text, "\\s+"))
+  w <- w[!(w %in% stop_words_en)]
+  paste(w, collapse = " ")
+}
+
+stem_text <- function(text){
+  w <- unlist(strsplit(text, "\\s+"))
+  w <- SnowballC::wordStem(w, language = "en")
+  paste(w, collapse = " ")
+}
+
+train <- train_raw %>%
+  dplyr::mutate(
+    tweet_clean = clean_tweet(tweet),
+    tweet_clean = vapply(tweet_clean, remove_stopwords, FUN.VALUE = character(1)),
+    tweet_clean = vapply(tweet_clean, stem_text, FUN.VALUE = character(1))
+  ) %>%
+  dplyr::filter(nchar(tweet_clean) > 0)
+
+valid <- valid_raw %>%
+  dplyr::mutate(
+    tweet_clean = clean_tweet(tweet),
+    tweet_clean = vapply(tweet_clean, remove_stopwords, FUN.VALUE = character(1)),
+    tweet_clean = vapply(tweet_clean, stem_text, FUN.VALUE = character(1))
+  ) %>%
+  dplyr::filter(nchar(tweet_clean) > 0)
+
+head(train$tweet_clean, 5)
+```
+
+# 5. Labels (numérique + factor)
+
+```{r labels}
+train$sentiment <- as.factor(train$sentiment)
+valid$sentiment <- factor(valid$sentiment, levels = levels(train$sentiment))
+
+train$sentiment_num <- as.integer(train$sentiment)
+valid$sentiment_num <- as.integer(valid$sentiment)
+
+levels(train$sentiment)
+table(train$sentiment, useNA = "ifany")
+```
+
+# 6. TF-IDF + Réduction de dimension (SVD optimisée)
+
+```{r tfidf-svd}
+it_train <- text2vec::itoken(train$tweet_clean, progressbar = FALSE)
+it_valid <- text2vec::itoken(valid$tweet_clean, progressbar = FALSE)
+
+vocab <- text2vec::create_vocabulary(it_train)
+
+# pruning plus strict pour accélérer et stabiliser
+vocab <- text2vec::prune_vocabulary(
+  vocab,
+  term_count_min = 10,
+  doc_proportion_max = 0.35
+)
+
+vectorizer <- text2vec::vocab_vectorizer(vocab)
+
+dtm_train <- text2vec::create_dtm(it_train, vectorizer)
+dtm_valid <- text2vec::create_dtm(it_valid, vectorizer)
+
+tfidf <- text2vec::TfIdf$new()
+x_train_tfidf <- tfidf$fit_transform(dtm_train)
+x_valid_tfidf <- tfidf$transform(dtm_valid)
+
+dim(x_train_tfidf)
+
+k <- min(100, ncol(x_train_tfidf) - 1, nrow(x_train_tfidf) - 1)
+svd_fit <- irlba::irlba(x_train_tfidf, nv = k, nu = k)
+
+x_train_red <- svd_fit$u %*% diag(svd_fit$d)
+x_valid_red <- as.matrix(x_valid_tfidf %*% svd_fit$v)
+
+dim(x_train_red)
+dim(x_valid_red)
+```
+
+# 7. AFD via LDA (MASS)
+
+```{r lda}
+x_train_df <- as.data.frame(x_train_red)
+colnames(x_train_df) <- paste0("C", seq_len(ncol(x_train_df)))
+
+x_valid_df <- as.data.frame(x_valid_red)
+colnames(x_valid_df) <- colnames(x_train_df)
+
+train_lda_df <- cbind(sentiment = train$sentiment, x_train_df)
+
+lda_model <- MASS::lda(sentiment ~ ., data = train_lda_df)
+lda_model
+```
+
+# 8. Visualisation espace AFD
+
+```{r lda-plot}
+pred_train <- predict(lda_model, newdata = x_train_df)
+pred_valid <- predict(lda_model, newdata = x_valid_df)
+
+scores_train <- as.data.frame(pred_train$x)
+scores_train$sentiment <- train$sentiment
+
+if(ncol(scores_train) >= 2){
+  ggplot2::ggplot(scores_train, ggplot2::aes(x = LD1, y = LD2, color = sentiment)) +
+    ggplot2::geom_point(alpha = 0.3) +
+    ggplot2::theme_minimal() +
+    ggplot2::labs(title = "Projection AFD (Train)", x = "LD1", y = "LD2")
+} else {
+  ggplot2::ggplot(scores_train, ggplot2::aes(x = LD1, fill = sentiment)) +
+    ggplot2::geom_density(alpha = 0.4) +
+    ggplot2::theme_minimal() +
+    ggplot2::labs(title = "Projection AFD (Train) — LD1", x = "LD1", y = "Densité")
+}
+```
+
+# 9. Évaluation (Accuracy + confusion matrix + silhouette)
+
+```{r evaluation}
+conf <- table(Predicted = pred_valid$class, Actual = valid$sentiment)
+conf
+
+accuracy <- sum(diag(conf)) / sum(conf)
+accuracy
+
+caret::confusionMatrix(pred_valid$class, valid$sentiment)
+
+# Silhouette sur sous-échantillon (évite O(n^2) et limites "long vectors")
+coords <- as.matrix(pred_train$x)
+coords2 <- coords[, 1:min(2, ncol(coords)), drop = FALSE]
+
+n_sil <- min(5000, nrow(coords2))
+set.seed(42)
+idx_sil <- sample(seq_len(nrow(coords2)), n_sil)
+
+D_sub <- dist(coords2[idx_sil, , drop = FALSE])
+lab_sub <- as.integer(train$sentiment[idx_sil])
+
+sil_sub <- cluster::silhouette(lab_sub, D_sub)
+mean_silhouette <- mean(sil_sub[, "sil_width"])
+mean_silhouette
+```
+
+# 10. Topic Modeling (visualisation de sujets)
+
+```{r topics}
+dtm_tm <- as(dtm_train, "dgCMatrix")
+
+# IMPORTANT : topicmodels::LDA refuse les lignes entièrement nulles
+rs <- Matrix::rowSums(dtm_tm)
+dtm_tm_nz <- dtm_tm[rs > 0, ]
+
+# Sous-échantillon contrôlé pour que ça termine vite
+n_topic <- min(8000, nrow(dtm_tm_nz))
+set.seed(42)
+idx_topic <- sample(seq_len(nrow(dtm_tm_nz)), n_topic)
+
+dtm_sub <- dtm_tm_nz[idx_topic, ]
+
+lda_topics <- topicmodels::LDA(dtm_sub, k = 6, control = list(seed = 42))
+terms(lda_topics, 10)
+```

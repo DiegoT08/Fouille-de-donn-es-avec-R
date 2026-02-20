@@ -1,0 +1,620 @@
+<style type="text/css">
+body, td {font-size: 17px;}
+code.r{font-size: 5px;}
+
+pre { font-size: 15px;}
+</style>
+<p><code>{r setup, include=FALSE} knitr::opts_chunk$set(echo = TRUE)</code></p>
+<p><FONT color='#0066CC'><FONT size = 4 ></p>
+<div data-align="center">
+<p>Fouille de données avec R pour la data science et l’intelligence
+artificielle<br />
+</p>
+<p>TD 2 : II. CONSTRUCTION D’UN CLASSIFIEUR BAYESIEN NAIF EN R</p>
+</div>
+<p></FONT></FONT></p>
+<p><FONT color='#0066CC'><FONT size = 4 ></p>
+<div data-align="center">
+<p>Badr TAJINI – ESIEE Paris<br />
+Source : Bertrand Roudier – ESIEE Paris</p>
+</div>
+<p></FONT></FONT></p>
+<hr style="border: 1px  solid gray">
+</hr>
+<p>Il s’agit de développer un script complet en R permettant de réaliser
+une classification bayésienne analogue à celles fournies par différents
+paquets R<br />
+Pour y parvenir, il est nécessaire de bien comprendre le
+“fonctionnement” d’une classification Bayésienne (développé dans le
+cours) en décomposant les différents calculs par étape:</p>
+<ul>
+<li>Calcul des probabilités conditionnelles (Vraisemblance)<br />
+</li>
+<li>Calcul des probabilités a postériori en fonction du niveau de la
+variable à prédire</li>
+<li>Maximisation de la fonction <em>ln(h<SUB>map </SUB>)</em></li>
+</ul>
+<p><br> Dans un premier temps, nous développerons l’algorithme à l’aide
+d’un jeu de données très simple: celui fourni en cours. Les résultats de
+toutes les étapes seront fournies, à vous de développer les scripts pour
+y parvenir. Une fois le programme mis au point (que nous considérerons
+comme la phase de développement), Vous testerez votre programme sur un
+jeu de données plus conséquent. Les résultats que vous obtiendrez seront
+comparés à des fonction R déjà implémenté. Nous évaluerons ensuite, à
+l’aide de matrices de confusion les résultats obtenus.</p>
+<hr style="border: 1px  solid gray">
+<h3 id="rappels"><FONT color='#000033'><FONT size = 3> 1. RAPPELS
+</FONT></FONT></h3>
+<ul>
+<li><p>Le classifieur bayesien naïf est une méthode d’apprentissage
+supervisé fondée sur le théorème de Bayes. Elle repose sur une hypothèse
+forte : les descripteurs (Xj) sont deux à deux indépendants
+conditionnellement aux valeurs de la variable à prédire (Y).</p></li>
+<li><p>Cette méthode simple à implémenter, se révèle cependant très
+robuste par rapport à un écart d’indépendance et ses performances sont
+comparables aux autres techniques d’apprentissage souvent bien plus
+complexes pour des grands volumes de données.</p></li>
+</ul>
+<p>remarque importante. Cette présentation est inspiré des remarquables
+cours de Ricco RAKOTOMALA disponible sur le blog TANAGRA :
+http://tutoriels-data-mining.blogspot.com</p>
+<h5 id="définition"><FONT color='#000033'> <FONT size = 3> 1.1
+Définition </FONT> </FONT></h5>
+<ul>
+<li>Deux évènements A et B sont indépendants si la connaissance de l’un
+ne modifie pas la connaissance de l’autre. Dans ces conditions
+(indépendance) :</li>
+</ul>
+<p><span class="math display">$$\left. \begin{array}{l}
+P(A/B) = P(A)\\
+P(B/A) = P(B)\\
+P(A \cap B) = P(A)P(B)
+\end{array} \right\}P(A/B) = \frac{{P(B/A)P(A)}}{{P(B)}}$$</span></p>
+<h5
+id="classifieur-et-règle-bayésienne"><FONT color='#000033'><FONT size = 3>
+1.2 Classifieur et règle bayésienne </FONT> </FONT></h5>
+<ul>
+<li>Soit un jeux de données (matrice prédictive) composée de n
+prédicteurs X (n variables). La variable à prédire Y est composée de k
+classes C.</li>
+</ul>
+<br>
+<center>
+<img src="Dessin_1.jpg" id="id" class="class"
+style="width:50.0%;height:50.0%" />
+</center>
+<p><br></p>
+<p><strong>remarque importante</strong>. Nous considérons dans cette
+exemple que les variables explicatives sont catégorielles. Chacunes
+d’elles possédent l modalités (l étant différent d’une variable à
+l’autre)</p>
+<ul>
+<li>La probabilité d’appartenance d’un individu à une classe connaissant
+à priori ses valeurs x (les observations pour cet individu) est donnée
+par la régle bayésienne :</li>
+</ul>
+<p>[P({C_k}/{X_n}) = ]</p>
+<strong>1.2.1.</strong> La probabilité d’observer une réalisation (un
+individu i - une ligne) connaissant sa classe d’appartenance k est la
+suivante :
+<center>
+[P({X_1} = {x_1},{X_2} = {x_2},…,{X_n} = {x_n}/{C_k})]
+</center>
+<ul>
+<li>Cette probabilité est appelée la vraisemblance. Sous hypothèse
+d’indépendance (condition nécessaire au développement suivant), nous
+avons le développement suivant:</li>
+</ul>
+<center>
+[P({X_1} = {x_1},{X_2} = {x_2},…,{X_n} = {x_n}/{C_k}) = P({X_1} =
+{x_1}/{C_k})P({X_2} = {x_2}/{C_k})…P({X_n} = {x_n}/{C_k}) = _{p = 1}^n
+{P({X_p}/{C_k})} ]
+</center>
+<strong>1.2.2.</strong> La probabilité d’observer une réalisation (un
+individu i - une ligne) quelque-soit sa classe d’appartenance est :
+<center>
+[P({X_1} = {x_1},{X_2} = {x_2},…,{X_n} = {x_n}) = P({X_1} =
+{x_1})P({X_2} = {x_2})…P({X_n} = {x_n}) = _{p = 1}^n {P({X_p})} ]
+</center>
+<p><strong>1.2.3.</strong> La probabilité qu’un individus appartienne à
+la classe k est : <span
+class="math inline"><em>P</em>(<em>C</em><sub><em>k</em></sub>)</span></p>
+<p>La probabilité d’appartenance est la suivante :</p>
+<p>[P({C_k}/{X_n}) = ]</p>
+<ul>
+<li>rmq: Un exemple pratique de calcul des probabilités est fourni dans
+le cours <strong>classification bayésienne</strong> *</li>
+</ul>
+<hr>
+<p><br></p>
+<h5 id="régles-daffectations"><FONT color='#000033'><FONT size = 3> 1.3
+Régles d’affectations </FONT></FONT></h5>
+<ul>
+<li><p>Pour chaque individus de la base, on calcule la probabilité
+d’appartenance <span
+class="math inline"><em>P</em>(<em>C</em><sub><em>k</em></sub>/<em>X</em><sub><em>n</em></sub>)</span>
+à TOUS les groupe k. l’affectation à un groupe sera :</p>
+<center>
+<p>[{h_{map}} = ( {} )]</p>
+</center></li>
+<li><p><em>rmq:</em> hmap est aussi appelé maximum de vraisemblance à
+posteriori</p></li>
+<li><p>Sachant que <span class="math inline">$P({X_1} = {x_1},{X_2} =
+{x_2},...,{X_n} = {x_n}) = \prod\limits_{p = 1}^n {P({X_p})}$</span>
+est, pour un individu, <strong>une constante</strong>, elle n’intervient
+pas dans le calcul du maximum de vraisemblance à postériori. La fonction
+précédente peut donc être simplifiée :</p></li>
+</ul>
+<center>
+[{h_{map}} = ( {P({C_k})_{p = 1}^n {P({X_p}/{C_k})} } )]
+</center>
+<h5 id="corrections"><FONT color='#000033'><FONT size = 3> 1.4
+Corrections </FONT></FONT></h5>
+<ul>
+<li>Pour éviter d’obtenir des probabilités conditionnelles nulles <span
+class="math inline"><em>P</em>(<em>X</em><sub><em>p</em></sub>/<em>C</em><sub><em>k</em></sub>)</span>
+(Vraisemblance), on utilise aussi un facteur correctif. Soit <span
+class="math inline"><em>n</em><sub><em>x</em></sub></span> le nombre
+d’observations <span
+class="math inline"><em>X</em> = <em>x</em><sub><em>i</em></sub></span>
+d’une variable X (nombre de modalités = <span
+class="math inline"><em>x</em><sub><em>i</em></sub></span> pour une
+variable), <span
+class="math inline"><em>n</em><sub><em>k</em><em>i</em></sub></span> le
+nombre d’observations appartenant à <em>k</em> pour la modalité <span
+class="math inline"><em>x</em><sub><em>i</em></sub></span> de X, le
+facteur correctif est le suivant:</li>
+</ul>
+<center>
+[P({X_p}/{C_k}) = ]
+</center>
+<p>Pour rappel ;</p>
+<ul>
+<li><em>k</em> est le nombre de facteur de la variable à prédire</li>
+<li><em>m</em> est la facteur correctif de Laplace</li>
+</ul>
+<h5
+id="tranformation-logarithmique"><FONT color='#000033'><FONT size = 3>
+1.5 Tranformation logarithmique </FONT></FONT></h5>
+<ul>
+<li>La fonction hmap est passée en logarithme tel que :</li>
+</ul>
+<p>[{h_{map}} = ( {( {P({C_k})} ) + _{p = 1}^n {( {P({X_p}/{C_k})} )} }
+)]</p>
+<p>D’un point de vue calculatoire, le produit de nombreuses probabilités
+(toutes bien évidemment inférieures à 1 !) peut rapidement provoquer des
+débordements de mémoire. le passage en log permet d’éviter ce
+problème</p>
+<br>
+<hr style="border: 1px  solid gray">
+<h3 id="programmation"><FONT color='#000033'><FONT size = 3> 2.
+PROGRAMMATION </FONT></h3>
+<p>Nous allons procéder en deux étapes</p>
+<ul>
+<li>Calcul des tableaux des probabilités conditionnelles puis stockage
+de ces derniers dans des listes.</li>
+<li>Calcul des probabilités <em>a posteriori</em> et affectation par
+argmax sur un jeu de données test</li>
+</ul>
+<p>Au préalable, nous créons le dataframe contenant le jeu de données
+(simplissime !) fourni en cours.</p>
+<p>Nous utilisons :</p>
+<ul>
+<li>le package <a
+href="https://cran.r-project.org/web/packages/kableExtra/vignettes/awesome_table_in_html.html">kableExtra</a>
+qui permet de réaliser des “beaux” tableaux au format html ou pdf.<br />
+</li>
+<li>le package <em>caret</em> pour les matrices de confusion<br />
+</li>
+<li>le paquest <em>e1071</em> qui réalise la classification Bayésienne.
+Les résultats développés dans vos scripts seront comparés à ceux fournis
+par cette librairie</li>
+</ul>
+<p><em>rmq</em>: Ne jamais oublier d’effacer toutes les variables en
+mémoire au début de votre script (réinitialiser l’environnement)</p>
+<p><code>{r} # à compléter
+rm(list = ls())
+gc()
+</code></p>
+<p><code>{r, echo = T} # à compléter
+    library(kableExtra)
+    library(caret)
+    library(e1071)
+
+</code></p>
+<p>Affichage du tableau avec <em>kableExtra</em></p>
+<p><code>{r} # à compléter
+    data <- data.frame(
+  salaire = c("30-50","30-50","<30","<30","30-50","30-50",">50",">50"),
+  impot   = c("<20","<20","<20",">20","<20",">20",">20",">20"),
+  etudiant = c("Oui","Oui","Oui","Non","Oui","Non","Non","Non"),
+  controle = c("Oui","Oui","Non","Oui","Oui","Non","Non","Non")
+)
+
+data[] <- lapply(data, factor)
+
+kable(data) %>% kable_styling(full_width = FALSE)
+</code></p>
+<p>On scinde le dataFrame et l’on crée un dataFrame X (prédicteur) et un
+vecteur des catégories à prédire (Y)</p>
+<p><code>{r, echo = T} # à compléter
+    X <- data[, -which(names(data) == "controle")]
+Y <- data$controle
+
+</code></p>
+<p><code>{r, echo = F} # à compléter
+    levels(Y)
+</code></p>
+<code>{r, echo = T} # à compléter
+    table(Y)
+</code>
+<hr>
+<h5
+id="probabilité-conditionnelle"><FONT color='#000033'><FONT size = 3>
+2.1 Probabilité conditionnelle </FONT></FONT></h5>
+<h6 id="tableau-de-contingence"><FONT color='#000033'><FONT size =3>
+2.1.1 Tableau de contingence </FONT> </FONT></h6>
+<p>Dans un premier temp Nous cherchons ici à créer les tableaux de
+contingence entre les différentes variables du prédicteur et la variable
+à prédire. Nous créons ainsi 3 tableaux. A titre d’exemple, le tableau
+de contingence <em>contrôle</em> x <em>salaire</em> est le suivant:</p>
+<center>
+<img src="Salaire.jpg" id="id" class="class"
+style="width:50.0%;height:50.0%" />
+</center>
+<p><br></p>
+<p>les trois tableaux sont stockés dans une liste. Pour y parvenir, on
+utilise La fonction <em>table</em> de R qui réalise les tableaux. Le
+calcul de chaque tableau ainsi que le stockage sont réalisés par une
+fonction <em>lapply</em>. Si vous éprouver des difficultés, il est
+possible d’utiliser dans un premier temps une boucle pour la mise au
+point, puis transformer la boucle et un <em>lapply</em></p>
+<ul>
+<li>Chaque nom des objets de la liste (eq clés dictionnaires python)
+doit correspondre au nom de la variable ( ce qui est, en principe,
+automatiquement réalisée</li>
+<li>La structure des tables doit être la même: la variable à expliquer
+en colonne et la variable explicative en ligne (cf. tableaux
+précédents)</li>
+<li>on nommera cette liste : “contingence”</li>
+</ul>
+<p>les résultas R sont les suivants;</p>
+<p><code>{r, echo = T} # à compléter
+    contingence <- lapply(X, function(x) {
+  table(x, Y)
+})
+contingence
+
+</code></p>
+<h6
+id="probabilités-conditionnelles-corrigées"><FONT color='#000033'><FONT size =3>
+2.1.2 Probabilités conditionnelles corrigées </FONT> </FONT></h6>
+<ul>
+<li><p>Pour palier au problème conditionnelle nulle, on corrige le
+tableau de contingence en ajoutant à toutes les valeurs la quantité m
+(par défaut = 1)</p></li>
+<li><p>Pour calculer les probabilités conditionnelles corrigées, il
+suffit de diviser élément par élément les deux tableaux précédents :
+<span class="math inline">$P({a_i}/{c_k}) = \frac{{{n_{kl}} + m}}{{{n_k}
++ mk}}$</span></p></li>
+<li><p>Les différentes étapes de correction sont résumés, pour la
+variable salaire comme suit:</p>
+<ul>
+<li>Création du tableau de contingence</li>
+<li>Correction du tableau</li>
+<li>Calcul de la somme nk + m*k</li>
+<li>Calcul des probabilités conditionnelles corrigées</li>
+</ul></li>
+</ul>
+<p><br></p>
+<center>
+<img src="Test_Bayesien_processus.jpg" id="id" class="class"
+style="width:50.0%;height:50.0%" />
+</center>
+<p><br></p>
+<p>L’ensemble des calculs est réalisé en modifiant les tableaux de
+contingence de la liste.</p>
+<p>A partir des tableaux de contingence stockés dans la liste, nous
+obtenons la liste des probabilités conditionnelles: Nous appelons cette
+nouvelle liste <em>prop_cond</em></p>
+<p><code>{r, echo = T} # à compléter
+    m <- 1
+
+prop_cond <- lapply(contingence, function(tab) {
+  tab_corr <- tab + m
+  nk <- colSums(tab)
+  k <- nrow(tab)
+  sweep(tab_corr, 2, nk + m * k, "/")
+})
+
+prop_cond
+
+</code></p>
+<h5 id="prédiction-et-vraisemblance"><FONT color='#000033'>
+<FONT size = 3> 2.2 Prédiction et Vraisemblance </FONT></FONT></h5>
+<ul>
+<li>Une fois les probabilités conditionnelles calculées, nous pouvons
+réaliser une prédiction sur un jeux de données test. Pour y parvenir
+:</li>
+<li>Nous cherchons à déterminer, pour chaque individus test, quelles
+sont les probabilités d’appartenances aux groupes (contrôle = Oui -
+contrôle = Non) connaissant les valeurs des variables prédictives.</li>
+<li>L’affectation à un groupe (contrôle = Oui - contrôle = Non)
+s’effectue en sélectionnant la probabilité max.</li>
+</ul>
+Nous devons calculer, pour chaque individus test, la probabilités à
+postériori (eq. max de vraisemblance a posteriori) :
+<center>
+[
+]
+</center>
+Pour éviter les problèmes de débordement de capacité mémoire nous
+calculerons directement les log de la vraisemblance à postériori
+<center>
+[
+]
+</center>
+<p>Le jeu des données test est le suivant (<em>data_test</em>) :</p>
+<p><code>{r, echo = T} # à compléter
+    load("data_test.Rda")
+data_test
+
+</code></p>
+<p><code>{r, echo = T} # à compléter
+    str(data_test)
+
+</code></p>
+<h6 id="appartenance-a-priori"><FONT color='#000033'><FONT size = 3>
+2.2.1 Appartenance <em>a priori</em> </FONT></FONT></h6>
+<p>La probabilité d’appartenance à priori correspond à la probabilité
+qu’un individus ait un contrôle ou non. Elle est calculée à partir des
+données entraînement. Les résultats sont stockés dans un vecteur
+<em>priori</em>. De plus, on stocke le “nom” des catégories dans un
+vecteur(ici il s’agit simplement de ‘Oui’ et ‘Non’)</p>
+<p><code>{r, echo = T} # à compléter
+    priori <- prop.table(table(Y))
+priori
+
+</code></p>
+<p><code>{r} # à compléter
+    classes <- names(priori)
+classes
+
+</code> <code>{r} # à compléter</code></p>
+<p>Les probabilités d’affectation pour chaque individus test sont
+stockées dans une matrice. Les résultats sont les suivants :</p>
+<p>```{r, echo = T}</p>
+<h1 id="à-compléter">à compléter
+    log_post <- matrix(NA, nrow = nrow(data_test), ncol = length(classes))
+colnames(log_post) <- classes
+
+</h1>
+<pre><code>
+
+```{r, echo = T}
+
+# à compléter
+
+for (i in 1:nrow(data_test)) {
+  for (k in 1:length(classes)) {
+    logS <- 0
+    for (var in names(data_test)) {
+      logS <- logS + log(prop_cond[[var]][data_test[i, var], classes[k]])
+    }
+    log_post[i, k] <- log(priori[k]) + logS
+  }
+}
+log_post
+
+</code></pre>
+<p>Pour réalisér les calculs, la méthode est la suivante :</p>
+<p>Réaliser 3 boucles “for” imbriquées</p>
+<ul>
+<li>la première boucle pour sélectionner chaque individu dans le
+dataframe <em>data_test</em></li>
+<li>la seconde boucle pour extraire la probabilité à priori (variable
+<em>priori</em>)</li>
+<li>la troisième boucle pour extraire les tableaux de probabilités
+conditionnelles stockés dans la liste <em>prob_cond</em>
+<ul>
+<li>on extrait les probabilités (par les noms des lignes et des
+colonnes)</li>
+<li>on calcule la somme des log</li>
+</ul></li>
+</ul>
+<p>Exemple</p>
+<ul>
+<li>Boucle 1 : sélection de l’individu : Salaire = 30-50 , impot &lt; 20
+, Etudiant = Oui<br />
+</li>
+<li>Boucle 2 : extraire la probabilités a priori : Priori = Oui (qui
+correspond à contrôle = Oui) P = 0.6<br />
+</li>
+<li>Boucle 3 :
+<ul>
+<li>extraire les probabilités conditionnelles des tableaux
+<ul>
+<li>Salaire = 30-50 et contrôle = Oui (= 0.5)<br />
+</li>
+<li>Impot &lt; 20 et contrôle = Oui<br />
+</li>
+<li>Etudiant = Oui et Controle = Oui<br />
+</li>
+</ul></li>
+<li>faire la somme des log des probabilités = logS<br />
+</li>
+</ul></li>
+<li>Dans la boucle 2 (après la boucle 3) , on calculera les probabilités
+à posteriori d’affectation
+<ul>
+<li>log(0.6) + logS</li>
+</ul></li>
+</ul>
+<p>L’ensemble des résultats sera stocké dans un tableau (data.frame)</p>
+<p>On choisira max(hmap) pour prédire la présence ou l’absence de
+contrôle. Les résultats seront résumés dans un data.frame</p>
+<p>```{r, echo = T}</p>
+<h1 id="à-compléter-1">à compléter
+    prediction <- apply(log_post, 1, function(x) classes[which.max(x)])
+prediction <- factor(prediction, levels = levels(Y))
+prediction
+
+</h1>
+<pre><code>
+
+&lt;br&gt;
+&lt;hr style=&quot;border: 1px  solid gray&quot;&gt;
+
+### &lt;FONT color=&#39;#000033&#39;&gt;&lt;FONT size = 3&gt; 3. FONCTIONS &lt;/FONT&gt; 
+               
+Une fois les scripts validés, Nous allons écrire deux fonctions génériques qui nous permettront de réutiliser le code indépendamment du nombre de variables et du nombre de catégories (labels).
+
+#### &lt;FONT color=&#39;#000033&#39;&gt;&lt;FONT size = 3&gt; 3.1 Naive_Bayes &lt;/FONT&gt; 
+
+La première fonction que nous appelerons *Naive_Bayes* declarée comme suit :
+
+
+calculera les probabilités conditionnelles corrigées par le facteur m et les probabilités d&#39;appartenance *priori*:   
+
+&gt; &lt;FONT size = 3&gt;  *Naive_Bayes &lt;- fonction( X,Y, m=1){....}* &lt;/FONT&gt;
+
+Cette fonction devra retourner la liste suivante:  
+
+&gt; &lt;FONT size = 3&gt;  *out &lt;- list(&#39;prob_cond&#39; = prob_cond, &#39;priori&#39; = priori)* &lt;/FONT&gt;
+
+* prob_cond est la liste des tableaux des probabilités conditionnelles pour chaque variable
+* priori étant le tableau des probabilités d&#39;appartenance au groupes (contrôle = Oui, Contrôle = Non)
+
+```{r, echo = T}
+# à compléter
+
+Naive_Bayes <- function(X, Y, m = 1) {
+  
+  contingence <- lapply(X, function(x) table(x, Y))
+  
+  prob_cond <- lapply(contingence, function(tab) {
+    tab_corr <- tab + m
+    nk <- colSums(tab)
+    k <- nrow(tab)
+    sweep(tab_corr, 2, nk + m * k, "/")
+  })
+  
+  priori <- prop.table(table(Y))
+  
+  out <- list(prob_cond = prob_cond, priori = priori)
+  return(out)
+}
+</code></pre>
+<p>Les résultats sont les suivants:</p>
+<p><code>{r} # à compléter
+    out <- Naive_Bayes(X, Y)
+out
+
+</code> <br></p>
+<h4 id="prédiction"><FONT color='#000033'><FONT size = 3> 3.2 Prédiction
+</FONT></h4>
+<p>Pour réaliser la prédiction, nous créons une fonction
+<em>Predict_Bay</em> qui retournera les prédictions (log_Vraiseemblance)
+et l’affectation sous forme de DataFrame. Cette fonction aura deux
+arguments:</p>
+<blockquote>
+<p><FONT size = 3> <em>Predict_Bayes &lt;- fonction(prob_cond,
+X_pred){….}</em> </FONT></p>
+</blockquote>
+<ul>
+<li><em>prob_cond</em> qui correspond à la liste retournée par la
+fonction <em>naive_Bayes</em></li>
+<li><em>X_pred</em> est le dataframe dont il faut prévoir les Y</li>
+</ul>
+<p>les résultats sont les suivants</p>
+<p><code>{r, echo = T} # à compléter
+    Predict_Bayes <- function(model, X_pred) {
+  
+  prob_cond <- model$prob_cond
+  priori <- model$priori
+  classes <- names(priori)
+  
+  log_post <- matrix(NA, nrow = nrow(X_pred), ncol = length(classes))
+  colnames(log_post) <- classes
+  
+  for (i in 1:nrow(X_pred)) {
+    for (k in 1:length(classes)) {
+      logS <- 0
+      for (var in names(X_pred)) {
+        logS <- logS + log(prob_cond[[var]][X_pred[i, var], classes[k]])
+      }
+      log_post[i, k] <- log(priori[k]) + logS
+    }
+  }
+  
+  prediction <- apply(log_post, 1, function(x) classes[which.max(x)])
+  
+  data.frame(log_post, prediction = prediction)
+}
+
+</code></p>
+<p><code>{r} # à compléter
+    Predict_Bayes(out, data_test)
+
+</code></p>
+<p><code>{r, echo = T} # à compléter
+    load("data_test.Rda")
+
+</code></p>
+<br>
+<hr style="border: 1px  solid gray">
+<h3 id="deploiement"><FONT color='#000033'><FONT size = 3> 4.
+DEPLOIEMENT </FONT></h3>
+<h4 id="scripts"><FONT color='#000033'><FONT size = 3> 4.1 Scripts
+</FONT></h4>
+<p>Nous allons utiliser nos fonctions sur une jeu de données en
+situation réelle. <strong>L’objectif n’est pas d’évaluer la qualité du
+classifieur</strong> mais de comparer les résultats obtenus à l’aide de
+vos scripts avec ceux programmés dans un paquet de référence R
+:<em>e1071</em> qui est très utilisé en R. <strong>Il n’est pas non plus
+question dans le cadre de cours de réaliser une technique
+d’apprentissage</strong></p>
+<p>Le jeux de données comprend 12 attributs et 4000 instances (fichier
+<em>data_test.Rda</em>) On cherche à prédire la classe <em>event</em>
+puis à comparer les observations et les prédictions à l’aide d’une
+matrice de confusion.</p>
+<p>On charge le fichier <code>{r} # à compléter
+    load("data_test.Rda")
+
+</code></p>
+<p>En utilisant les scripts, vous devez obtenir les probabilités
+conditionnelles suivantes</p>
+<p><code>{r, echo = T} # à compléter
+    out_real <- Naive_Bayes(
+  data_test[, -which(names(data_test) == "event")],
+  data_test$event
+)
+
+out_real$prob_cond
+
+</code></p>
+<p>On réalise maintenant la prédiction sur le jeux de données. Attention
+les calculs peuvent durer plusieurs minutes compte tenu du nombre
+d’instances !</p>
+<p><code>{r} # à compléter
+    pred_real <- Predict_Bayes(
+  out_real,
+  data_test[, -which(names(data_test) == "event")]
+)
+
+head(pred_real)
+
+</code></p>
+<h4 id="fonctions-r"><FONT color='#000033'><FONT size = 3> 4.2 Fonctions
+R </FONT></h4>
+<p>Nous utilisons maintenant la fonction NaivesBaye du paquet e1071</p>
+<p>```{r}</p>
+<h1 id="à-compléter-2">à compléter
+    model_nb <- naiveBayes(event ~ ., data = data_test)
+pred_nb <- predict(model_nb, data_test)
+
+confusionMatrix(pred_nb, data_test$event)
+</h1>
+<p>```</p>
+<p>Les résultats doivent être les mêmes…. ce qui prouve que vous avez
+bien travaillé !</p>

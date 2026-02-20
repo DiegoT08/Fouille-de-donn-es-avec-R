@@ -1,0 +1,745 @@
+<h1 id="projet-2-analyse-factorielle-discriminante-afd">Projet 2 :
+Analyse Factorielle Discriminante (AFD)</h1>
+<h3
+id="twitter-entity-sentiment-analysis-regroupement-et-visualisation-des-sentiments">Twitter
+Entity Sentiment Analysis — Regroupement et visualisation des
+sentiments</h3>
+<p><strong>ESIEE Paris – 2025-2026 – E4 AP-4209</strong><br />
+<strong>Auteurs :</strong> TORRES Diego, WU Lucas<br />
+<strong>Encadrant :</strong> Badr TAJINI</p>
+<hr />
+<h2 id="table-des-matières">Table des matières</h2>
+<ol style="list-style-type: decimal">
+<li><a href="#id_-vue-densemble">Vue d’ensemble</a></li>
+<li><a href="#id_-dataset">Dataset</a></li>
+<li><a href="#id_-pipeline-compl%C3%A8te">Pipeline complète</a></li>
+<li><a href="#id_-structure-du-projet">Structure du projet</a></li>
+<li><a href="#id_-installation-et-d%C3%A9pendances">Installation et
+dépendances</a></li>
+<li><a href="#id_-utilisation">Utilisation</a></li>
+<li><a href="#id_-r%C3%A9sultats">Résultats</a></li>
+<li><a href="#id_-m%C3%A9thodes-et-fondements-th%C3%A9oriques">Méthodes
+et fondements théoriques</a></li>
+<li><a href="#id_-limites-et-travaux-futurs">Limites et travaux
+futurs</a></li>
+<li><a href="#id_-r%C3%A9f%C3%A9rences">Références</a></li>
+</ol>
+<hr />
+<h2 id="vue-densemble">Vue d’ensemble</h2>
+<p>Ce projet applique l’<strong>Analyse Factorielle Discriminante
+(AFD)</strong>, implémentée via l’Analyse Discriminante Linéaire
+(<code>MASS::lda()</code>), sur le dataset <strong>Twitter Entity
+Sentiment Analysis</strong>. L’objectif est de <strong>réduire la
+dimensionnalité</strong> des représentations textuelles de tweets et de
+<strong>visualiser le regroupement des sentiments</strong> dans un
+espace de dimension réduite.</p>
+<p><strong>Pipeline en six étapes :</strong></p>
+<pre><code>Tweets bruts (73 824 entrées d&#39;entraînement)
+    ↓
+Nettoyage (URLs, mentions, hashtags, caractères spéciaux)
+    + Stopwords (anglais) + Stemming (Snowball)
+    ↓
+TF-IDF  →  72 346 docs × 6 010 termes
+    ↓
+SVD tronquée (irlba)  →  72 346 × 100 dimensions latentes
+    ↓
+AFD via LDA (MASS)  →  3 axes discriminants (LD1, LD2, LD3)
+    ↓
+Visualisation + Évaluation (Accuracy 51,55 % | Silhouette −0,048)
+    + Topic Modeling (LDA, k = 6)</code></pre>
+<hr />
+<h2 id="dataset">Dataset</h2>
+<p><strong>Source :</strong> <a
+href="https://www.kaggle.com/datasets/jp797498e/twitter-entity-sentiment-analysis">Twitter
+Entity Sentiment Analysis — Kaggle</a></p>
+<h3 id="fichiers">Fichiers</h3>
+<table>
+<thead>
+<tr>
+<th>Fichier</th>
+<th>Rôle</th>
+<th>Lignes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>twitter_training.csv</code></td>
+<td>Entraînement du modèle AFD</td>
+<td>73 824</td>
+</tr>
+<tr>
+<td><code>twitter_validation.csv</code></td>
+<td>Évaluation des performances</td>
+<td>999</td>
+</tr>
+</tbody>
+</table>
+<h3 id="structure-des-données">Structure des données</h3>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Colonne</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>Identifiant numérique du tweet</td>
+</tr>
+<tr>
+<td><code>entity</code></td>
+<td>Entité mentionnée (ex. : Borderlands, Google…)</td>
+</tr>
+<tr>
+<td><code>sentiment</code></td>
+<td><strong>Variable cible</strong> : <code>Irrelevant</code>,
+<code>Negative</code>, <code>Neutral</code>, <code>Positive</code></td>
+</tr>
+<tr>
+<td><code>tweet</code></td>
+<td>Texte brut du tweet</td>
+</tr>
+</tbody>
+</table>
+<h3 id="distribution-des-sentiments-entraînement">Distribution des
+sentiments (entraînement)</h3>
+<table>
+<thead>
+<tr>
+<th>Sentiment</th>
+<th>Effectif</th>
+<th>Proportion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Negative</td>
+<td>22 312</td>
+<td>30,2 %</td>
+</tr>
+<tr>
+<td>Positive</td>
+<td>20 619</td>
+<td>27,9 %</td>
+</tr>
+<tr>
+<td>Neutral</td>
+<td>18 051</td>
+<td>24,5 %</td>
+</tr>
+<tr>
+<td>Irrelevant</td>
+<td>12 842</td>
+<td>17,4 %</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Statistiques sur la longueur des tweets :</strong></p>
+<table>
+<thead>
+<tr>
+<th>Indicateur</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Nombre de tweets (train)</td>
+<td>73 824</td>
+</tr>
+<tr>
+<td>Longueur moyenne</td>
+<td>109 caractères</td>
+</tr>
+<tr>
+<td>Longueur médiane</td>
+<td>91 caractères</td>
+</tr>
+<tr>
+<td>Percentile 90</td>
+<td>236 caractères</td>
+</tr>
+</tbody>
+</table>
+<h3 id="placement-des-fichiers">Placement des fichiers</h3>
+<pre><code>projet2/
+└── data/
+    ├── twitter_training.csv
+    └── twitter_validation.csv</code></pre>
+<hr />
+<h2 id="pipeline-complète">Pipeline complète</h2>
+<h3 id="étape-1-nettoyage-du-texte">Étape 1 — Nettoyage du texte</h3>
+<p>Chaque tweet est nettoyé séquentiellement :</p>
+<pre><code>1. Mise en minuscules
+2. Suppression des URLs        (http://, www.)
+3. Suppression des mentions    (@username)
+4. Suppression des hashtags    (#topic)
+5. Suppression des caractères non alphabétiques
+6. Normalisation des espaces
+7. Suppression des stopwords anglais (tm::stopwords(&quot;en&quot;) + &quot;rt&quot;)
+8. Stemming anglais (SnowballC::wordStem)</code></pre>
+<p><strong>Exemple :</strong></p>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Avant</th>
+<th>Après</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>im getting on borderlands and i will murder you all</code></td>
+<td><code>im get borderland will murder</code></td>
+</tr>
+<tr>
+<td><code>I am coming to the borders and I will kill you all</code></td>
+<td><code>come border will kill</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="étape-2-vectorisation-tf-idf">Étape 2 — Vectorisation
+TF-IDF</h3>
+<ul>
+<li>Outil : <code>text2vec</code></li>
+<li>Pruning : <code>term_count_min = 10</code>,
+<code>doc_proportion_max = 0.35</code></li>
+<li><strong>Résultat :</strong> 72 346 documents × 6 010 termes</li>
+</ul>
+<h3 id="étape-3-réduction-svd-tronquée-lsa">Étape 3 — Réduction SVD
+tronquée (LSA)</h3>
+<ul>
+<li>Outil : <code>irlba::irlba()</code></li>
+<li>Paramètre : k = 100 composantes latentes</li>
+<li><strong>Résultat :</strong> 72 346 × 100 (train) | 999 × 100
+(validation)</li>
+</ul>
+<h3 id="étape-4-afd-via-lda-mass">Étape 4 — AFD via LDA (MASS)</h3>
+<ul>
+<li><code>MASS::lda(sentiment ~ ., data = train_lda_df)</code></li>
+<li>Priors estimés depuis les fréquences observées :</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Sentiment</th>
+<th>Prior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Irrelevant</td>
+<td>0,174</td>
+</tr>
+<tr>
+<td>Negative</td>
+<td>0,303</td>
+</tr>
+<tr>
+<td>Neutral</td>
+<td>0,244</td>
+</tr>
+<tr>
+<td>Positive</td>
+<td>0,279</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Résultat :</strong> 3 axes discriminants (K − 1, avec K = 4
+classes)</li>
+</ul>
+<p><strong>Proportion de trace (variance discriminante) :</strong></p>
+<table>
+<thead>
+<tr>
+<th>Axe</th>
+<th>Proportion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LD1</td>
+<td><strong>55,63 %</strong></td>
+</tr>
+<tr>
+<td>LD2</td>
+<td><strong>29,09 %</strong></td>
+</tr>
+<tr>
+<td>LD3</td>
+<td><strong>15,28 %</strong></td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>100 %</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="étape-5-topic-modeling-lda-thématique">Étape 5 — Topic Modeling
+(LDA thématique)</h3>
+<ul>
+<li>k = 6 topics, Gibbs sampling, seed = 42</li>
+<li>Sous-échantillon : 8 000 tweets (pour limiter le temps de
+calcul)</li>
+</ul>
+<p><strong>Top 10 mots par topic (après stemming) :</strong></p>
+<table>
+<colgroup>
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Thème probable</th>
+<th>Mots clés</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T1</td>
+<td>Politique / Sport</td>
+<td>itali, just, johnson, can, make, come, year, will, play</td>
+</tr>
+<tr>
+<td>T2</td>
+<td>Engagement / Communauté</td>
+<td>com, day, player, can, get, go, thank, peopl, love</td>
+</tr>
+<tr>
+<td>T3</td>
+<td>Jeux vidéo (négatif)</td>
+<td>game, like, fuck, play, go, get, m, shit</td>
+</tr>
+<tr>
+<td>T4</td>
+<td>Jeux vidéo (général)</td>
+<td>s, game, just, realli, love, twitter, will, look, call</td>
+</tr>
+<tr>
+<td>T5</td>
+<td>Réseaux sociaux / Gaming</td>
+<td>t, com, play, game, twitter, get, pic, now, realli</td>
+</tr>
+<tr>
+<td>T6</td>
+<td>Général / Divers</td>
+<td>com, t, s, game, can, fuck, one, pic, best, good</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="structure-du-projet">Structure du projet</h2>
+<pre><code>projet2/
+│
+├── data/
+│   ├── twitter_training.csv          # Données d&#39;entraînement
+│   └── twitter_validation.csv        # Données de validation
+│
+├── projet2.Rmd                        # Document principal (code + rapport)
+├── projet2.html                       # Rapport compilé
+│
+└── README.md                          # Ce fichier</code></pre>
+<hr />
+<h2 id="installation-et-dépendances">Installation et dépendances</h2>
+<h3 id="prérequis">Prérequis</h3>
+<ul>
+<li><strong>R</strong> ≥ 4.3.0</li>
+<li><strong>RStudio</strong> (recommandé) ou tout éditeur compatible
+RMarkdown</li>
+<li>Mémoire RAM recommandée : <strong>≥ 8 Go</strong> (matrice TF-IDF
+72K × 6K en mémoire)</li>
+</ul>
+<h3 id="installation-des-packages">Installation des packages</h3>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="fu">install.packages</span>(<span class="fu">c</span>(</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>  <span class="co"># Manipulation de données</span></span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>  <span class="st">&quot;readr&quot;</span>, <span class="st">&quot;dplyr&quot;</span>, <span class="st">&quot;stringr&quot;</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>  <span class="co"># Visualisation</span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a>  <span class="st">&quot;ggplot2&quot;</span>,</span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a></span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a>  <span class="co"># NLP / Vectorisation</span></span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a>  <span class="st">&quot;tm&quot;</span>,          <span class="co"># Stopwords</span></span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a>  <span class="st">&quot;SnowballC&quot;</span>,   <span class="co"># Stemming</span></span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a>  <span class="st">&quot;text2vec&quot;</span>,    <span class="co"># TF-IDF vectorizer</span></span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a>  <span class="st">&quot;irlba&quot;</span>,       <span class="co"># SVD tronquée</span></span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a></span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a>  <span class="co"># Modélisation AFD</span></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a>  <span class="st">&quot;MASS&quot;</span>,        <span class="co"># LDA discriminant</span></span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a></span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a>  <span class="co"># Évaluation</span></span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a>  <span class="st">&quot;caret&quot;</span>,       <span class="co"># Matrice de confusion</span></span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a>  <span class="st">&quot;cluster&quot;</span>,     <span class="co"># Score silhouette</span></span>
+<span id="cb5-20"><a href="#cb5-20" tabindex="-1"></a></span>
+<span id="cb5-21"><a href="#cb5-21" tabindex="-1"></a>  <span class="co"># Topic Modeling</span></span>
+<span id="cb5-22"><a href="#cb5-22" tabindex="-1"></a>  <span class="st">&quot;topicmodels&quot;</span>, <span class="co"># LDA thématique</span></span>
+<span id="cb5-23"><a href="#cb5-23" tabindex="-1"></a>  <span class="st">&quot;Matrix&quot;</span>       <span class="co"># Gestion matrices creuses</span></span>
+<span id="cb5-24"><a href="#cb5-24" tabindex="-1"></a>))</span></code></pre></div>
+<hr />
+<h2 id="utilisation">Utilisation</h2>
+<h3 id="lancement-du-rapport">Lancement du rapport</h3>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>rmarkdown<span class="sc">::</span><span class="fu">render</span>(<span class="st">&quot;projet2.Rmd&quot;</span>)</span></code></pre></div>
+<p>Ou depuis le terminal Windows :</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode powershell"><code class="sourceCode powershell"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="op">&amp;</span> <span class="st">&quot;C:\Program Files\R\R-4.5.2\bin\Rscript.exe&quot;</span> <span class="op">-</span>e <span class="st">&quot;rmarkdown::render(&#39;projet2.Rmd&#39;)&quot;</span></span></code></pre></div>
+<h3 id="paramètres-clés-modifiables">Paramètres clés modifiables</h3>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>k         <span class="ot">&lt;-</span> <span class="dv">100</span>    <span class="co"># Nombre de dimensions SVD (compromis vitesse/précision)</span></span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>n_sil     <span class="ot">&lt;-</span> <span class="dv">5000</span>   <span class="co"># Taille du sous-échantillon pour le score silhouette</span></span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>n_topic   <span class="ot">&lt;-</span> <span class="dv">8000</span>   <span class="co"># Taille du sous-échantillon pour le topic modeling</span></span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>k_topics  <span class="ot">&lt;-</span> <span class="dv">6</span>      <span class="co"># Nombre de topics LDA thématique</span></span></code></pre></div>
+<hr />
+<h2 id="résultats">Résultats</h2>
+<h3
+id="évaluation-de-la-classification-ensemble-de-validation-999-tweets">Évaluation
+de la classification (ensemble de validation — 999 tweets)</h3>
+<table>
+<thead>
+<tr>
+<th>Métrique</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Accuracy</strong></td>
+<td><strong>51,55 %</strong></td>
+</tr>
+<tr>
+<td>Kappa de Cohen</td>
+<td>0,3352</td>
+</tr>
+<tr>
+<td>No Information Rate (baseline)</td>
+<td>28,53 %</td>
+</tr>
+<tr>
+<td>p-value (Acc &gt; NIR)</td>
+<td>&lt; 2,2 × 10⁻¹⁶</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>L’accuracy de 51,55 % est <strong>significativement supérieure à la
+baseline</strong> (28,53 %), confirmant que l’AFD capture une structure
+discriminante réelle dans les données. La nature très courte des tweets
+et la proximité sémantique des classes limitent les performances
+absolues.</p>
+</blockquote>
+<h3 id="métriques-par-classe-validation">Métriques par classe
+(validation)</h3>
+<table>
+<thead>
+<tr>
+<th>Classe</th>
+<th>Sensibilité</th>
+<th>Spécificité</th>
+<th>Precision</th>
+<th>Balanced Acc.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Irrelevant</td>
+<td>0,110</td>
+<td>0,975</td>
+<td>0,475</td>
+<td>0,543</td>
+</tr>
+<tr>
+<td>Negative</td>
+<td>0,694</td>
+<td>0,752</td>
+<td>0,503</td>
+<td>0,723</td>
+</tr>
+<tr>
+<td>Neutral</td>
+<td>0,554</td>
+<td>0,777</td>
+<td>0,498</td>
+<td>0,666</td>
+</tr>
+<tr>
+<td>Positive</td>
+<td>0,556</td>
+<td>0,831</td>
+<td>0,558</td>
+<td>0,694</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Observation :</strong> La classe <code>Irrelevant</code> est
+la plus difficile à détecter (sensibilité = 11 %), car ces tweets ne
+présentent pas de signal sémantique clair lié au sentiment.</p>
+</blockquote>
+<h3 id="matrice-de-confusion-validation">Matrice de confusion
+(validation)</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Irrelevant</th>
+<th>Negative</th>
+<th>Neutral</th>
+<th>Positive</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Prédit Irrelevant</strong></td>
+<td>19</td>
+<td>6</td>
+<td>4</td>
+<td>11</td>
+</tr>
+<tr>
+<td><strong>Prédit Negative</strong></td>
+<td>62</td>
+<td>184</td>
+<td>72</td>
+<td>48</td>
+</tr>
+<tr>
+<td><strong>Prédit Neutral</strong></td>
+<td>47</td>
+<td>48</td>
+<td>158</td>
+<td>64</td>
+</tr>
+<tr>
+<td><strong>Prédit Positive</strong></td>
+<td>44</td>
+<td>27</td>
+<td>51</td>
+<td>154</td>
+</tr>
+</tbody>
+</table>
+<h3 id="score-silhouette">Score silhouette</h3>
+<table>
+<colgroup>
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Indicateur</th>
+<th>Valeur</th>
+<th>Interprétation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Score silhouette moyen</td>
+<td><strong>−0,048</strong></td>
+<td>Chevauchement fort entre les classes dans l’espace AFD</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>Un score silhouette négatif ou proche de 0 indique que les clusters
+de sentiments se chevauchent significativement dans l’espace LD1–LD2.
+Cela est cohérent avec la nature ambiguë du sentiment dans les tweets
+courts.</p>
+</blockquote>
+<h3 id="proportion-de-variance-discriminante">Proportion de variance
+discriminante</h3>
+<pre><code>LD1 : 55,63 %  ████████████████████████████░░░░░░░░░░░░░░░░
+LD2 : 29,09 %  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+LD3 : 15,28 %  ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</code></pre>
+<p>LD1 seul capture plus de la moitié de la variance discriminante entre
+les 4 classes de sentiment.</p>
+<hr />
+<h2 id="méthodes-et-fondements-théoriques">Méthodes et fondements
+théoriques</h2>
+<h3 id="tf-idf-term-frequency-inverse-document-frequency">TF-IDF (Term
+Frequency – Inverse Document Frequency)</h3>
+<p>Pondération qui valorise les termes fréquents dans un document mais
+rares dans l’ensemble du corpus, capturant ainsi le contenu lexical
+discriminant de chaque tweet.</p>
+<h3 id="svd-tronquée-singular-value-decomposition">SVD tronquée
+(Singular Value Decomposition)</h3>
+<p>La matrice TF-IDF (72K × 6K) est projetée vers un espace dense de
+dimension k = 100 via décomposition SVD :</p>
+<p><span
+class="math display"><em>X</em> ≈ <em>U</em><sub><em>k</em></sub><em>Σ</em><sub><em>k</em></sub><em>V</em><sub><em>k</em></sub><sup>⊤</sup></span></p>
+<p>Cette réduction (1) stabilise le calcul de l’AFD, (2) élimine le
+bruit lexical, (3) capture les relations sémantiques latentes entre
+termes.</p>
+<h3 id="analyse-factorielle-discriminante-afd-lda-discriminant">Analyse
+Factorielle Discriminante (AFD / LDA discriminant)</h3>
+<p>L’AFD cherche les projections <strong>w</strong> maximisant le
+critère de Fisher :</p>
+<p><span class="math display">$$J(\mathbf{w}) = \frac{\mathbf{w}^\top
+S_B \,\mathbf{w}}{\mathbf{w}^\top S_W \,\mathbf{w}}$$</span></p>
+<p>avec <span class="math inline"><em>S</em><sub><em>B</em></sub></span>
+= dispersion inter-classes, <span
+class="math inline"><em>S</em><sub><em>W</em></sub></span> = dispersion
+intra-classes. Pour K = 4 classes, on obtient au maximum <strong>K − 1 =
+3 axes discriminants</strong>.</p>
+<h3 id="score-silhouette-1">Score silhouette</h3>
+<p>Pour chaque point <span class="math inline"><em>i</em></span> :</p>
+<p><span class="math display">$$s(i) = \frac{b(i) - a(i)}{\max(a(i),
+b(i))}$$</span></p>
+<p>avec <span class="math inline"><em>a</em>(<em>i</em>)</span> =
+distance moyenne intra-cluster et <span
+class="math inline"><em>b</em>(<em>i</em>)</span> = distance moyenne au
+cluster voisin le plus proche. Un score proche de 1 indique une bonne
+séparation ; proche de 0 ou négatif, un fort chevauchement.</p>
+<hr />
+<h2 id="limites-et-travaux-futurs">Limites et travaux futurs</h2>
+<h3 id="limites-identifiées">Limites identifiées</h3>
+<ul>
+<li><strong>Tweets très courts</strong> (médiane 91 caractères) : la
+représentation TF-IDF est creuse et peu informative pour des textes
+aussi courts, ce qui limite la séparabilité des classes.</li>
+<li><strong>Classe Irrelevant</strong> : très faible sensibilité (11 %),
+car ces tweets ne présentent pas de signal sémantique lié au sentiment
+envers l’entité mentionnée.</li>
+<li><strong>Score silhouette négatif</strong> (−0,048) : fort
+chevauchement des classes dans l’espace AFD — les sentiments sont
+intrinsèquement ambigus dans ce type de données.</li>
+<li><strong>Stemming trop agressif</strong> : certains tokens stemés
+(<code>t</code>, <code>s</code>, <code>m</code>) sont des artefacts qui
+polluent le vocabulaire.</li>
+</ul>
+<h3 id="pistes-damélioration">Pistes d’amélioration</h3>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Piste</th>
+<th>Bénéfice attendu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Embeddings contextuels (BERT, RoBERTa)</td>
+<td>Représentation sémantique bien supérieure à TF-IDF pour les tweets
+courts</td>
+</tr>
+<tr>
+<td>Kernel Discriminant Analysis (KDA)</td>
+<td>Capturer des frontières non linéaires entre classes de
+sentiment</td>
+</tr>
+<tr>
+<td>Lexicons de sentiment (AFINN, VADER, NRC)</td>
+<td>Features de sentiment explicites en complément du TF-IDF</td>
+</tr>
+<tr>
+<td>Filtrage des tokens aberrants post-stemming</td>
+<td>Supprimer <code>t</code>, <code>s</code>, <code>m</code> du
+vocabulaire</td>
+</tr>
+<tr>
+<td>Oversampling SMOTE sur <code>Irrelevant</code></td>
+<td>Rééquilibrer l’entraînement pour améliorer la sensibilité</td>
+</tr>
+<tr>
+<td>Modèles de classification dédiés (SVM, XGBoost)</td>
+<td>Performances supérieures à l’AFD seule pour la classification</td>
+</tr>
+<tr>
+<td>Analyse par entité</td>
+<td>Explorer si certaines entités ont des profils de sentiment
+distincts</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="références">Références</h2>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Référence</th>
+<th>Citation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Dataset</strong></td>
+<td><a
+href="https://www.kaggle.com/datasets/jp797498e/twitter-entity-sentiment-analysis">Twitter
+Entity Sentiment Analysis — Kaggle</a></td>
+</tr>
+<tr>
+<td><strong>AFD / LDA discriminant</strong></td>
+<td>Fisher, R.A. (1936). <em>The use of multiple measurements in
+taxonomic problems</em>. Annals of Eugenics, 7(2), 179–188</td>
+</tr>
+<tr>
+<td><strong>SVD / LSA</strong></td>
+<td>Deerwester et al. (1990). <em>Indexing by Latent Semantic
+Analysis</em>. JASIS, 41(6), 391–407</td>
+</tr>
+<tr>
+<td><strong>text2vec</strong></td>
+<td>Selivanov, D. (2023). <em>text2vec: Modern Text Mining Framework for
+R</em>. CRAN</td>
+</tr>
+<tr>
+<td><strong>irlba</strong></td>
+<td>Baglama &amp; Reichel (2005). <em>Augmented implicitly restarted
+Lanczos bidiagonalization methods</em>. SIAM</td>
+</tr>
+<tr>
+<td><strong>Score silhouette</strong></td>
+<td>Rousseeuw, P.J. (1987). <em>Silhouettes: A graphical aid to the
+interpretation and validation of cluster analysis</em>. JCAM, 20,
+53–65</td>
+</tr>
+<tr>
+<td><strong>Stemming Snowball</strong></td>
+<td>Porter, M.F. (1980). <em>An algorithm for suffix stripping</em>.
+Program, 14(3), 130–137</td>
+</tr>
+<tr>
+<td><strong>Package MASS</strong></td>
+<td>Venables, W.N., Ripley, B.D. (2002). <em>Modern Applied Statistics
+with S</em>. Springer</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="auteurs">Auteurs</h2>
+<table>
+<thead>
+<tr>
+<th>Nom</th>
+<th>Établissement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TORRES Diego</td>
+<td>ESIEE Paris</td>
+</tr>
+<tr>
+<td>WU Lucas</td>
+<td>ESIEE Paris</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Encadrant :</strong> Badr TAJINI — ESIEE Paris<br />
+<strong>Cours :</strong> AP-4209 — E4 — 2025-2026<br />
+<strong>Date de rendu :</strong> 14/02/2026</p>

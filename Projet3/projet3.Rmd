@@ -1,0 +1,836 @@
+---
+title: "Projet 3 : Classification bayésienne et analyse factorielle discriminante"
+subtitle: "Thèses de doctorat françaises – ESIEE 2025-2026 – AP-4209"
+author: "TORRES Diego, WU Lucas"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+# ── Installation automatique des packages manquants ──────────────────────────
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+pkgs <- c(
+  "readr", "dplyr", "stringr", "tidyr",
+  "ggplot2", "scales", "RColorBrewer",
+  "tm", "SnowballC", "tidytext", "topicmodels",
+  "e1071", "MASS", "caret", "pROC", "naivebayes"
+)
+
+invisible(lapply(pkgs, function(p) {
+  if (!requireNamespace(p, quietly = TRUE))
+    install.packages(p, dependencies = TRUE)
+}))
+
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  warning    = FALSE,
+  message    = FALSE,
+  fig.align  = "center",
+  fig.width  = 10,
+  fig.height = 6,
+  cache      = FALSE
+)
+```
+
+---
+
+# Introduction
+
+## Contexte et objectifs
+
+Ce projet porte sur la **classification automatique de thèses de doctorat françaises** en domaines
+d'étude, à partir de leurs résumés textuels. Le jeu de données provient de la plateforme Kaggle
+([lien](https://www.kaggle.com/code/antoinebourgois2/french-doctoral-thesissemantic-similarity-search))
+et contient plus de **519 000 thèses** avec les colonnes : `URL`, `Title`, `Author`, `Description`,
+`Direction`, `Domain`, `Statuts`, `Date`.
+
+Les **objectifs principaux** sont :
+
+1. **Prétraiter** les résumés textuels (nettoyage, vectorisation TF-IDF).
+2. **Extraire des caractéristiques** via la modélisation thématique (LDA – Latent Dirichlet Allocation).
+3. **Réduire la dimensionnalité** avec l'Analyse Discriminante Linéaire (Linear Discriminant Analysis).
+4. **Classifier** les thèses avec un classifieur bayésien naïf.
+5. **Évaluer et interpréter** les résultats (matrice de confusion, F1-score, ROC-AUC).
+
+## Aperçu du dataset
+
+| Colonne       | Description                      |
+|---------------|----------------------------------|
+| `Title`       | Titre de la thèse                |
+| `Author`      | Auteur                           |
+| `Description` | Résumé (texte principal)         |
+| `Domain`      | Domaine d'étude (variable cible) |
+| `Direction`   | Directeur de thèse               |
+| `Statuts`     | Statut de la thèse               |
+| `Date`        | Date de soutenance               |
+
+**Caractéristiques clés** identifiées lors de l'exploration préalable :
+
+- 27 248 domaines distincts → nécessité de regrouper et filtrer les **top domaines**.
+- 20,21 % de valeurs manquantes dans `Description`.
+- Forte imbalance des classes (ratio max/min > 22 000).
+- Longueur médiane des résumés : **240 mots**.
+
+---
+
+# Chargement des bibliothèques et des données
+
+```{r libraries}
+library(readr)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(RColorBrewer)
+library(tm)
+library(SnowballC)
+library(tidytext)
+library(topicmodels)
+library(e1071)
+library(MASS)
+library(caret)
+library(pROC)
+
+set.seed(42)
+```
+
+```{r chargement-donnees}
+csv_path <- "data/french_thesis_20231021_metadata.csv"
+
+if (!file.exists(csv_path)) {
+  stop("Fichier introuvable. Placez 'french_thesis_20231021_metadata.csv' dans le dossier 'data/'.")
+}
+
+df_raw <- read_csv(csv_path, show_col_types = FALSE)
+
+cat("Dimensions du dataset brut :", nrow(df_raw), "lignes x", ncol(df_raw), "colonnes\n")
+cat("Colonnes :", paste(names(df_raw), collapse = ", "), "\n")
+```
+
+---
+
+# Prétraitement des données
+
+## Exploration et sélection des données
+
+Le dataset contient plus de 27 000 domaines distincts. Nous **sélectionnons les 10 domaines les
+plus représentés** pour obtenir un problème multi-classes gérable, puis nous sous-échantillonnons
+pour atténuer le déséquilibre des classes.
+
+```{r exploration-distribution}
+domain_counts <- df_raw %>%
+  dplyr::filter(!is.na(Domain), !is.na(Description)) %>%
+  dplyr::count(Domain, sort = TRUE)
+
+cat("=== TOP 15 DOMAINES ===\n")
+print(head(domain_counts, 15))
+
+domain_counts %>%
+  head(20) %>%
+  ggplot(aes(x = reorder(Domain, n), y = n, fill = n)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_gradient(low = "#74c0fc", high = "#1864ab") +
+  coord_flip() +
+  labs(
+    title    = "Top 20 des domaines de theses",
+    subtitle = "Nombre de theses par domaine (avec resume disponible)",
+    x = "Domaine", y = "Nombre de theses"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r selection-top-domaines}
+TOP_N_DOMAINS  <- 10
+MAX_PER_DOMAIN <- 1500
+
+top_domains <- domain_counts %>%
+  head(TOP_N_DOMAINS) %>%
+  dplyr::pull(Domain)
+
+cat("Domaines selectionnes :\n")
+cat(paste0("  ", seq_along(top_domains), ". ", top_domains, "\n"), sep = "")
+
+df <- df_raw %>%
+  dplyr::filter(
+    Domain %in% top_domains,
+    !is.na(Description),
+    str_length(Description) > 50
+  ) %>%
+  dplyr::group_by(Domain) %>%
+  dplyr::slice_sample(n = MAX_PER_DOMAIN, replace = FALSE) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Domain = factor(Domain))
+
+# Nettoyage des niveaux pour compatibilité avec caret
+# caret exige des noms de classes valides en R (pas d'accents, espaces, caracteres speciaux)
+domain_labels_orig  <- levels(df$Domain)
+domain_labels_clean <- make.names(domain_labels_orig)
+label_map           <- setNames(domain_labels_orig, domain_labels_clean)
+
+df <- df %>%
+  dplyr::mutate(Domain = factor(make.names(as.character(Domain))))
+
+cat("\nDimensions apres filtrage :", nrow(df), "x", ncol(df), "\n")
+cat("Distribution finale :\n")
+print(table(df$Domain))
+cat("\nCorrespondance noms nettoyes -> noms originaux :\n")
+for (k in names(label_map)) cat(sprintf("  %-60s -> %s\n", k, label_map[k]))
+```
+
+```{r visualisation-distribution-finale}
+df %>%
+  dplyr::count(Domain) %>%
+  dplyr::mutate(Domain_orig = label_map[as.character(Domain)]) %>%
+  ggplot(aes(x = reorder(Domain_orig, n), y = n, fill = Domain_orig)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = n), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Distribution des classes apres echantillonnage",
+    x = "Domaine", y = "Nombre de theses"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold")) +
+  expand_limits(y = MAX_PER_DOMAIN * 1.15)
+```
+
+## Nettoyage du texte
+
+```{r nettoyage-texte}
+stopwords_fr <- unique(c(
+  tm::stopwords("fr"),
+  tm::stopwords("en"),
+  "these", "travail", "etude", "recherche", "objectif",
+  "resultat", "resultats", "methode", "approche", "analyse",
+  "proposition", "chapitre", "partie", "cadre", "contexte",
+  "premier", "second", "troisieme", "notamment", "ainsi",
+  "cependant", "egalement", "afin", "permet", "partir"
+))
+
+nettoyer_texte <- function(texte) {
+  texte %>%
+    str_to_lower() %>%
+    str_replace_all("[àáâãäå]", "a") %>%
+    str_replace_all("[èéêë]",   "e") %>%
+    str_replace_all("[ìíîï]",   "i") %>%
+    str_replace_all("[òóôõö]",  "o") %>%
+    str_replace_all("[ùúûü]",   "u") %>%
+    str_replace_all("[ç]",      "c") %>%
+    str_replace_all("[ñ]",      "n") %>%
+    str_replace_all("[^a-z\\s]", " ") %>%
+    str_squish()
+}
+
+df <- df %>%
+  dplyr::mutate(Description_clean = nettoyer_texte(Description))
+
+cat("=== EXEMPLE DE NETTOYAGE ===\n")
+cat("AVANT :\n", str_trunc(df$Description[1], 300), "\n\n")
+cat("APRES :\n", str_trunc(df$Description_clean[1], 300), "\n")
+```
+
+## Vectorisation TF-IDF
+
+```{r corpus-tfidf}
+corpus <- VCorpus(VectorSource(df$Description_clean))
+
+corpus <- corpus %>%
+  tm_map(content_transformer(tolower)) %>%
+  tm_map(removeWords, stopwords_fr) %>%
+  tm_map(stemDocument, language = "french") %>%
+  tm_map(stripWhitespace)
+
+dtm_tfidf <- DocumentTermMatrix(
+  corpus,
+  control = list(
+    weighting   = weightTfIdf,
+    bounds      = list(global = c(5, Inf)),
+    wordLengths = c(3, Inf)
+  )
+)
+dtm_tfidf <- removeSparseTerms(dtm_tfidf, 0.99)
+
+cat("DTM TF-IDF :", nrow(dtm_tfidf), "documents x", ncol(dtm_tfidf), "termes\n")
+```
+
+```{r top-termes}
+dtm_brut   <- DocumentTermMatrix(
+  corpus,
+  control = list(bounds = list(global = c(5, Inf)), wordLengths = c(3, Inf))
+)
+freq_terms <- colSums(as.matrix(dtm_brut))
+
+data.frame(
+  terme     = names(freq_terms),
+  frequence = as.numeric(freq_terms),
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::arrange(desc(frequence)) %>%
+  head(30) %>%
+  ggplot(aes(x = reorder(terme, frequence), y = frequence, fill = frequence)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_gradient(low = "#a9c4eb", high = "#1864ab") +
+  coord_flip() +
+  labs(
+    title = "Top 30 des termes les plus frequents (apres nettoyage + stemming)",
+    x = "Terme", y = "Frequence totale"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+---
+
+# Extraction de caractéristiques – Modélisation thématique (LDA)
+
+La **Latent Dirichlet Allocation (LDA)** extrait des **topics latents** qui enrichissent la
+représentation des documents pour le classifieur.
+
+```{r lda-preparation}
+dtm_lda_input <- DocumentTermMatrix(
+  corpus,
+  control = list(bounds = list(global = c(5, Inf)), wordLengths = c(3, Inf))
+)
+dtm_lda_input <- removeSparseTerms(dtm_lda_input, 0.995)
+
+row_totals    <- rowSums(as.matrix(dtm_lda_input))
+dtm_lda_input <- dtm_lda_input[row_totals > 0, ]
+df_lda        <- df[row_totals > 0, ]
+
+cat("DTM pour LDA :", nrow(dtm_lda_input), "x", ncol(dtm_lda_input), "\n")
+```
+
+```{r lda-topic-modeling}
+K <- 10
+
+lda_model <- LDA(
+  dtm_lda_input,
+  k       = K,
+  method  = "Gibbs",
+  control = list(seed = 42, burnin = 500, iter = 1000, keep = 50, best = TRUE)
+)
+
+cat("Modele LDA entraine avec", K, "topics.\n")
+```
+
+## Visualisation des topics
+
+```{r visualisation-topics}
+top_terms_lda <- terms(lda_model, 10)
+cat("=== TOP 10 MOTS PAR TOPIC ===\n")
+print(top_terms_lda)
+
+tidy(lda_model, matrix = "beta") %>%
+  dplyr::group_by(topic) %>%
+  dplyr::slice_max(beta, n = 8) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    term  = reorder_within(term, beta, topic),
+    topic = paste("Topic", topic)
+  ) %>%
+  ggplot(aes(x = term, y = beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~topic, scales = "free", ncol = 5) +
+  coord_flip() +
+  scale_x_reordered() +
+  scale_fill_brewer(palette = "Paired") +
+  labs(
+    title    = "Top 8 mots par topic (LDA - Latent Dirichlet Allocation)",
+    subtitle = "Probabilite beta d'appartenance du mot au topic",
+    x = NULL, y = "beta"
+  ) +
+  theme_minimal(base_size = 9) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+```{r gamma-matrix}
+gamma_matrix <- posterior(lda_model)$topics
+colnames(gamma_matrix) <- paste0("topic_", seq_len(K))
+
+cat("Matrice gamma :", nrow(gamma_matrix), "x", ncol(gamma_matrix), "\n")
+```
+
+---
+
+# Réduction de la dimensionnalité – Analyse Discriminante Linéaire
+
+L'**Analyse Discriminante Linéaire** réduit l'espace de features tout en maximisant la
+séparabilité entre les classes.
+
+```{r preparation-features}
+tfidf_mat <- as.matrix(dtm_tfidf)
+n_docs    <- min(nrow(tfidf_mat), nrow(gamma_matrix), nrow(df_lda))
+
+tfidf_aligned <- tfidf_mat[seq_len(n_docs), ]
+gamma_aligned <- gamma_matrix[seq_len(n_docs), ]
+labels        <- df_lda$Domain[seq_len(n_docs)]
+
+X_combined <- cbind(tfidf_aligned, gamma_aligned)
+y          <- droplevels(labels)
+
+cat("Matrice de features :", nrow(X_combined), "x", ncol(X_combined), "\n")
+cat("Distribution des classes :\n")
+print(table(y))
+```
+
+```{r split-train-test}
+train_idx <- createDataPartition(y, p = 0.70, list = FALSE)
+X_train   <- X_combined[train_idx, ]
+X_test    <- X_combined[-train_idx, ]
+y_train   <- y[train_idx]
+y_test    <- y[-train_idx]
+
+cat("Entrainement :", nrow(X_train), "docs | Test :", nrow(X_test), "docs\n")
+```
+
+```{r lda-discriminant}
+lda_disc <- MASS::lda(
+  x        = X_train,
+  grouping = y_train,
+  prior    = rep(1 / nlevels(y_train), nlevels(y_train)),
+  tol      = 1e-4
+)
+
+Z_train <- predict(lda_disc, X_train)$x
+Z_test  <- predict(lda_disc, X_test)$x
+
+cat("Espace LDA discriminant :", ncol(Z_train), "axes\n")
+```
+
+## Visualisation de la séparation des classes
+
+```{r visualisation-lda}
+data.frame(LD1 = Z_train[, 1], LD2 = Z_train[, 2], Domain = y_train) %>%
+  ggplot(aes(x = LD1, y = LD2, colour = Domain)) +
+  geom_point(alpha = 0.4, size = 1.2) +
+  stat_ellipse(aes(fill = Domain), geom = "polygon", alpha = 0.08, show.legend = FALSE) +
+  scale_colour_brewer(palette = "Paired") +
+  labs(
+    title    = "Projection LDA discriminante - 2 premiers axes",
+    subtitle = "Chaque point = une these (ensemble d'entrainement)",
+    x = "Axe discriminant 1 (LD1)", y = "Axe discriminant 2 (LD2)", colour = "Domaine"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title  = element_text(face = "bold", size = 13),
+    legend.text = element_text(size = 8)
+  )
+```
+
+```{r variance-expliquee}
+prop_var <- lda_disc$svd^2 / sum(lda_disc$svd^2)
+
+data.frame(
+  Axe   = factor(paste0("LD", seq_along(prop_var)),
+                 levels = paste0("LD", seq_along(prop_var))),
+  Prop  = prop_var,
+  Cumul = cumsum(prop_var)
+) %>%
+  ggplot(aes(x = Axe, y = Prop)) +
+  geom_col(fill = "#1864ab", alpha = 0.85) +
+  geom_line(aes(y = Cumul, group = 1), colour = "#e03131", linewidth = 1.2) +
+  geom_point(aes(y = Cumul), colour = "#e03131", size = 3) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title    = "Variance expliquee par les axes discriminants",
+    subtitle = "Barres = proportion individuelle | Ligne rouge = cumul",
+    x = "Axe discriminant", y = "Proportion de variance"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+---
+
+# Classification bayésienne naïve
+
+Le **classifieur bayésien naïf** calcule :
+
+$$P(D_k \mid \mathbf{x}) \propto P(D_k) \prod_{i=1}^{p} P(x_i \mid D_k)$$
+
+où $D_k$ est le domaine $k$ et $\mathbf{x}$ le vecteur de features.
+
+```{r naive-bayes-training}
+train_df <- data.frame(Z_train, Domain = y_train)
+test_df  <- data.frame(Z_test,  Domain = y_test)
+
+nb_model <- e1071::naiveBayes(
+  Domain ~ .,
+  data    = train_df,
+  laplace = 1
+)
+
+cat("Classifieur Naive Bayes entraine.\n")
+cat("Nombre de classes :", nlevels(y_train), "\n")
+```
+
+```{r nb-predictions}
+y_pred       <- predict(nb_model, test_df)
+y_pred_proba <- predict(nb_model, test_df, type = "raw")
+
+cat("Predictions effectuees sur", length(y_pred), "documents de test.\n")
+```
+
+---
+
+# Évaluation du modèle
+
+## Matrice de confusion
+
+```{r matrice-confusion}
+conf_mat <- caret::confusionMatrix(y_pred, y_test)
+
+cat("=== MATRICE DE CONFUSION ===\n")
+print(conf_mat$table)
+
+conf_df <- as.data.frame(conf_mat$table)
+# confusionMatrix renvoie des colonnes "Prediction" et "Reference"
+colnames(conf_df) <- c("Predit", "Reel", "Freq")
+
+conf_df$Predit <- ifelse(as.character(conf_df$Predit) %in% names(label_map),
+                         label_map[as.character(conf_df$Predit)],
+                         as.character(conf_df$Predit))
+conf_df$Reel   <- ifelse(as.character(conf_df$Reel) %in% names(label_map),
+                         label_map[as.character(conf_df$Reel)],
+                         as.character(conf_df$Reel))
+
+ggplot(conf_df, aes(x = Reel, y = Predit, fill = Freq)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = Freq), size = 3, fontface = "bold") +
+  scale_fill_gradient(low = "#dbe9f8", high = "#1864ab") +
+  labs(
+    title = "Matrice de confusion - Classifieur Naive Bayes",
+    x = "Classe reelle", y = "Classe predite", fill = "Effectif"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title  = element_text(face = "bold", size = 13),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    axis.text.y = element_text(size = 7)
+  )
+```
+
+## Métriques de performance
+
+```{r metriques-performance}
+accuracy <- conf_mat$overall["Accuracy"]
+kappa    <- conf_mat$overall["Kappa"]
+
+cat("=== METRIQUES GLOBALES ===\n")
+cat(sprintf("Accuracy : %.4f (%.2f%%)\n", accuracy, accuracy * 100))
+cat(sprintf("Kappa    : %.4f\n", kappa))
+
+metrics_par_classe <- data.frame(
+  Domaine     = str_remove(rownames(conf_mat$byClass), "Class: "),
+  Precision   = round(conf_mat$byClass[, "Precision"],   4),
+  Rappel      = round(conf_mat$byClass[, "Recall"],      4),
+  F1_Score    = round(conf_mat$byClass[, "F1"],          4),
+  Specificite = round(conf_mat$byClass[, "Specificity"], 4),
+  stringsAsFactors = FALSE
+)
+metrics_par_classe <- metrics_par_classe[order(-metrics_par_classe$F1_Score), ]
+
+cat("\n=== METRIQUES PAR CLASSE ===\n")
+print(metrics_par_classe, row.names = FALSE)
+
+f1_moyen <- mean(metrics_par_classe$F1_Score, na.rm = TRUE)
+cat(sprintf("\nF1-Score moyen (macro) : %.4f\n", f1_moyen))
+```
+
+```{r graphique-metriques}
+metrics_par_classe$Domaine_orig <- ifelse(
+  metrics_par_classe$Domaine %in% names(label_map),
+  label_map[metrics_par_classe$Domaine],
+  metrics_par_classe$Domaine
+)
+
+metrics_long <- tidyr::pivot_longer(
+  metrics_par_classe,
+  cols      = c("Precision", "Rappel", "F1_Score"),
+  names_to  = "Metrique",
+  values_to = "Valeur"
+)
+metrics_long <- metrics_long[!is.na(metrics_long$Valeur), ]
+
+ggplot(metrics_long, aes(x = reorder(Domaine_orig, Valeur), y = Valeur, fill = Metrique)) +
+  geom_col(position = "dodge", alpha = 0.85) +
+  coord_flip() +
+  scale_fill_manual(values = c(
+    "Precision" = "#339af0",
+    "Rappel"    = "#51cf66",
+    "F1_Score"  = "#ff6b6b"
+  )) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1)) +
+  labs(
+    title = "Precision, Rappel et F1-Score par domaine",
+    x = "Domaine", y = "Score", fill = "Metrique"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title      = element_text(face = "bold", size = 13),
+    axis.text.y     = element_text(size = 9),
+    legend.position = "top"
+  )
+```
+
+## Courbes ROC et AUC
+
+```{r roc-auc}
+classes    <- levels(y_test)
+auc_values <- numeric(length(classes))
+
+par(mfrow = c(2, 5), mar = c(3, 3, 2, 1))
+
+for (i in seq_along(classes)) {
+  cl       <- classes[i]
+  binary_y <- as.integer(y_test == cl)
+  proba_cl <- y_pred_proba[, i]
+
+  if (sum(binary_y) == 0 || sum(binary_y) == length(binary_y)) {
+    auc_values[i] <- NA
+    next
+  }
+
+  roc_obj       <- pROC::roc(binary_y, proba_cl, quiet = TRUE)
+  auc_values[i] <- as.numeric(pROC::auc(roc_obj))
+  titre_orig    <- if (cl %in% names(label_map)) label_map[[cl]] else cl
+
+  plot(roc_obj,
+       main     = str_trunc(titre_orig, 22),
+       col      = "#1864ab",
+       lwd      = 2,
+       cex.main = 0.72)
+  legend("bottomright",
+         legend   = paste0("AUC = ", round(auc_values[i], 3)),
+         bty      = "n", cex = 0.7, text.col = "#e03131")
+}
+
+par(mfrow = c(1, 1))
+
+auc_noms <- ifelse(classes %in% names(label_map), label_map[classes], classes)
+auc_df   <- data.frame(Domaine = auc_noms, AUC = round(auc_values, 4),
+                        stringsAsFactors = FALSE)
+auc_df   <- auc_df[order(-auc_df$AUC), ]
+
+cat("=== AUC PAR DOMAINE (One-vs-Rest) ===\n")
+print(auc_df, row.names = FALSE)
+cat(sprintf("\nAUC moyen (macro) : %.4f\n", mean(auc_values, na.rm = TRUE)))
+```
+
+## Validation croisée (5-fold)
+
+```{r cross-validation}
+# On utilise defaultSummary (Accuracy + Kappa) pour eviter la dependance MLmetrics
+ctrl <- caret::trainControl(
+  method      = "cv",
+  number      = 5,
+  classProbs  = FALSE,
+  verboseIter = FALSE
+)
+
+cv_model <- caret::train(
+  Domain ~ .,
+  data      = train_df,
+  method    = "naive_bayes",
+  trControl = ctrl,
+  metric    = "Accuracy"
+)
+
+cat("=== RESULTATS VALIDATION CROISEE (5-fold) ===\n")
+print(cv_model$results)
+cat(sprintf("\nAccuracy CV moyenne : %.4f +/- %.4f\n",
+            mean(cv_model$resample$Accuracy),
+            sd(cv_model$resample$Accuracy)))
+```
+
+---
+
+# Interprétabilité – Analyse des facteurs discriminants
+
+## Coefficients des axes discriminants
+
+```{r coefficients-lda}
+coef_mat <- as.matrix(lda_disc$scaling)
+n_top    <- 15
+
+# Fonction sans select() pour eviter les conflits de namespace
+plot_axe_lda <- function(mat, axe_num, n_affiche) {
+  vals <- mat[, axe_num]
+  idx  <- order(abs(vals), decreasing = TRUE)[seq_len(min(n_affiche, length(vals)))]
+  df_ax <- data.frame(
+    terme     = rownames(mat)[idx],
+    val       = vals[idx],
+    stringsAsFactors = FALSE
+  )
+  df_ax$Direction <- ifelse(df_ax$val > 0, "Positif", "Negatif")
+  df_ax$terme     <- reorder(df_ax$terme, df_ax$val)
+
+  ggplot(df_ax, aes(x = terme, y = val, fill = Direction)) +
+    geom_col(alpha = 0.85) +
+    coord_flip() +
+    scale_fill_manual(values = c("Positif" = "#2f9e44", "Negatif" = "#e03131")) +
+    labs(
+      title    = paste0("Top ", n_affiche, " features - LD", axe_num),
+      subtitle = "Coefficients discriminants (valeur absolue la plus elevee)",
+      x = "Feature", y = "Coefficient"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+}
+
+print(plot_axe_lda(coef_mat, 1, n_top))
+
+if (ncol(coef_mat) >= 2) print(plot_axe_lda(coef_mat, 2, n_top))
+```
+
+## Distribution des topics par domaine
+
+```{r topics-par-domaine}
+gamma_df <- data.frame(gamma_aligned[seq_len(n_docs), ],
+                        Domain = y[seq_len(n_docs)],
+                        stringsAsFactors = FALSE)
+
+gamma_long <- tidyr::pivot_longer(
+  gamma_df,
+  cols      = starts_with("topic_"),
+  names_to  = "Topic",
+  values_to = "Proportion"
+)
+
+gamma_agg <- gamma_long %>%
+  dplyr::group_by(Domain, Topic) %>%
+  dplyr::summarise(Proportion_moy = mean(Proportion), .groups = "drop")
+
+gamma_agg$Topic       <- str_replace(gamma_agg$Topic, "topic_", "T")
+gamma_agg$Domain_orig <- ifelse(
+  as.character(gamma_agg$Domain) %in% names(label_map),
+  label_map[as.character(gamma_agg$Domain)],
+  as.character(gamma_agg$Domain)
+)
+
+ggplot(gamma_agg, aes(x = Topic, y = Domain_orig, fill = Proportion_moy)) +
+  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_text(aes(label = round(Proportion_moy, 2)), size = 2.8) +
+  scale_fill_gradient(low = "#f1f3f5", high = "#1864ab", name = "Proportion\nmoyenne") +
+  labs(
+    title    = "Distribution moyenne des topics LDA par domaine",
+    subtitle = "Chaque cellule = proportion moyenne du topic dans les theses du domaine",
+    x = "Topic", y = "Domaine"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title  = element_text(face = "bold", size = 13),
+    axis.text.y = element_text(size = 8)
+  )
+```
+
+---
+
+# Gestion du déséquilibre des classes
+
+Le dataset original présente un **fort déséquilibre** (ratio max/min > 22 000). Le
+sous-échantillonnage (max 1 500 par classe) est la stratégie principale retenue. Ci-dessous,
+une comparaison entre priors uniformes et priors reflétant la distribution réelle.
+
+```{r priors-ajustes}
+priors_reels <- domain_counts %>%
+  dplyr::filter(Domain %in% top_domains) %>%
+  dplyr::mutate(
+    Domain_clean = make.names(Domain),
+    prior        = n / sum(n)
+  ) %>%
+  dplyr::arrange(match(Domain_clean, levels(y_train)))
+
+cat("=== PRIORS BAYESIENS (distribution reelle) ===\n")
+print(priors_reels[, c("Domain", "n", "prior")])
+
+nb_model_prior <- e1071::naiveBayes(Domain ~ ., data = train_df, laplace = 1)
+y_pred_prior   <- predict(nb_model_prior, test_df)
+
+cat(sprintf("\nAccuracy (prior uniforme) : %.4f\n", mean(y_pred       == y_test)))
+cat(sprintf("Accuracy (prior ajuste)   : %.4f\n", mean(y_pred_prior == y_test)))
+```
+
+---
+
+# Conclusion
+
+## Synthèse des résultats
+
+```{r synthese}
+cat("╔════════════════════════════════════════════════════════╗\n")
+cat("║         SYNTHESE DES RESULTATS - PROJET 3             ║\n")
+cat("╠════════════════════════════════════════════════════════╣\n")
+cat(sprintf("║  Documents traites        : %-6d                    ║\n", n_docs))
+cat(sprintf("║  Domaines (classes)       : %-6d                    ║\n", nlevels(y)))
+cat(sprintf("║  Features TF-IDF          : %-6d                    ║\n", ncol(tfidf_mat)))
+cat(sprintf("║  Topics LDA               : %-6d                    ║\n", K))
+cat(sprintf("║  Axes discriminants       : %-6d                    ║\n", ncol(Z_train)))
+cat("╠════════════════════════════════════════════════════════╣\n")
+cat(sprintf("║  Accuracy (test)          : %-6.2f%%                   ║\n", accuracy * 100))
+cat(sprintf("║  F1-Score moyen (macro)   : %-6.4f                    ║\n", f1_moyen))
+cat(sprintf("║  AUC moyen (One-vs-Rest)  : %-6.4f                    ║\n",
+            mean(auc_values, na.rm = TRUE)))
+cat(sprintf("║  Kappa de Cohen           : %-6.4f                    ║\n", kappa))
+cat("╚════════════════════════════════════════════════════════╝\n")
+```
+
+## Discussion
+
+Le pipeline mis en place démontre la viabilité de la **classification bayésienne** sur des données
+textuelles complexes. Plusieurs points méritent d'être soulignés.
+
+**Points forts :**
+
+- La combinaison **TF-IDF + features topics LDA** enrichit la représentation sémantique des résumés.
+- L'**Analyse Discriminante Linéaire** concentre l'information discriminante en réduisant
+  fortement la dimensionnalité tout en maximisant la séparation inter-classes.
+- Le **classifieur Naive Bayes** avec lissage de Laplace est robuste aux vecteurs creux (sparse)
+  typiques des représentations textuelles.
+
+**Limitations :**
+
+- Avec 27 248 domaines dans le dataset original, une classification exhaustive nécessiterait
+  des approches hiérarchiques ou un regroupement préalable.
+- Le fort déséquilibre des classes reste un défi même après sous-échantillonnage.
+- Les approches non-linéaires (SVM noyau, BERT français) pourraient significativement améliorer
+  les performances.
+
+**Pistes d'amélioration :**
+
+1. Utiliser des embeddings pré-entraînés en français (CamemBERT, FlauBERT) pour une meilleure
+   représentation sémantique.
+2. Appliquer **SMOTE** pour générer des exemples synthétiques dans les classes sous-représentées.
+3. Explorer la **Kernel Discriminant Analysis** pour capturer des non-linéarités.
+4. Tester une **classification hiérarchique** (grandes familles → sous-domaines).
+
+---
+
+# Ressources supplémentaires
+
+```{r session-info}
+sessionInfo()
+```
+
+## Références
+
+- **Dataset** : [French Doctoral Thesis – Kaggle](https://www.kaggle.com/code/antoinebourgois2/french-doctoral-thesissemantic-similarity-search)
+- Blei, D.M., Ng, A.Y., Jordan, M.I. (2003). *Latent Dirichlet Allocation*. JMLR.
+- Manning, C.D., Raghavan, P., Schütze, H. (2008). *Introduction to Information Retrieval*. Cambridge University Press.
+- Fisher, R.A. (1936). *The use of multiple measurements in taxonomic problems*. Annals of Eugenics.
+- Grün, B., Hornik, K. (2011). *topicmodels: An R Package for Fitting Topic Models*. JSS.

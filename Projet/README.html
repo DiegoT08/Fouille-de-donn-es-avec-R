@@ -1,0 +1,800 @@
+<h1 id="détection-de-texte-généré-par-ia">Détection de Texte Généré par
+IA</h1>
+<h3
+id="classification-bayésienne-analyse-factorielle-discriminante">Classification
+Bayésienne &amp; Analyse Factorielle Discriminante</h3>
+<p><strong>ESIEE Paris – 2025-2026 – E4 AP-4209</strong><br />
+<strong>Auteurs :</strong> TORRES Diego, WU Lucas<br />
+<strong>Encadrant :</strong> Badr TAJINI</p>
+<hr />
+<h2 id="table-des-matières">Table des matières</h2>
+<ol style="list-style-type: decimal">
+<li><a href="#id_-vue-densemble">Vue d’ensemble</a></li>
+<li><a href="#id_-dataset">Dataset</a></li>
+<li><a href="#id_-pipeline-compl%C3%A8te">Pipeline complète</a></li>
+<li><a href="#id_-structure-du-projet">Structure du projet</a></li>
+<li><a href="#id_-installation-et-d%C3%A9pendances">Installation et
+dépendances</a></li>
+<li><a href="#id_-utilisation">Utilisation</a></li>
+<li><a href="#id_-r%C3%A9sultats">Résultats</a></li>
+<li><a href="#id_-m%C3%A9thodes-et-fondements-th%C3%A9oriques">Méthodes
+et fondements théoriques</a></li>
+<li><a href="#id_-limites-et-travaux-futurs">Limites et travaux
+futurs</a></li>
+<li><a href="#id_-r%C3%A9f%C3%A9rences">Références</a></li>
+</ol>
+<hr />
+<h2 id="vue-densemble">Vue d’ensemble</h2>
+<p>Ce projet implémente un <strong>système complet de détection de texte
+généré par IA</strong>, opposant des textes humains (label
+<code>0</code>) à des textes produits par des LLMs (label
+<code>1</code>). Il s’inscrit dans le challenge Kaggle <a
+href="https://www.kaggle.com/competitions/llm-detect-ai-generated-text">LLM
+- Detect AI Generated Text</a>.</p>
+<p>L’approche repose sur une pipeline à cinq étapes :</p>
+<pre><code>Texte brut
+    ↓
+Features stylométriques (17 métriques linguistiques)
+    +
+TF-IDF bigrammes (332 486 termes)
+    ↓
+SVD tronquée — k = 150 dimensions latentes
+    ↓
+AFD (Analyse Factorielle Discriminante)  →  1 axe LD1 (Cohen&#39;s d = 5.49)
+    ↓
+Classification Bayésienne MCMC (NUTS/HMC via rstanarm)
+    ↓
+Probabilités calibrées P(texte IA)</code></pre>
+<hr />
+<h2 id="dataset">Dataset</h2>
+<h3 id="source-principale-llm-detect-kaggle">Source principale —
+LLM-Detect (Kaggle)</h3>
+<table>
+<colgroup>
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Fichier</th>
+<th>Description</th>
+<th>Lignes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>train_essays.csv</code></td>
+<td>Essais annotés (Kaggle officiel)</td>
+<td>1 378</td>
+</tr>
+<tr>
+<td><code>test_essays.csv</code></td>
+<td>Essais de test (soumission Kaggle)</td>
+<td>3 (jeu exemple)</td>
+</tr>
+<tr>
+<td><code>sample_submission.csv</code></td>
+<td>Format de soumission attendu</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h3 id="source-complémentaire-drcat">Source complémentaire — DRCAT</h3>
+<table>
+<thead>
+<tr>
+<th>Fichier</th>
+<th>Description</th>
+<th>Lignes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>train_drcat_01.csv</code></td>
+<td>Textes humains &amp; IA (fold 1)</td>
+<td>~40 000</td>
+</tr>
+<tr>
+<td><code>train_drcat_02.csv</code></td>
+<td>Textes humains &amp; IA (fold 2)</td>
+<td>~40 000</td>
+</tr>
+<tr>
+<td><code>train_drcat_03.csv</code></td>
+<td>Textes humains &amp; IA (fold 3)</td>
+<td>~40 000</td>
+</tr>
+<tr>
+<td><code>train_drcat_04.csv</code></td>
+<td>Textes humains &amp; IA (fold 4)</td>
+<td>~40 000</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Dataset consolidé après fusion et nettoyage :</strong></p>
+<table>
+<thead>
+<tr>
+<th>Classe</th>
+<th>Effectif</th>
+<th>Proportion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Humain (0)</td>
+<td>116 747</td>
+<td>72,6 %</td>
+</tr>
+<tr>
+<td>IA (1)</td>
+<td>44 087</td>
+<td>27,4 %</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>160 834</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Structure CSV attendue :</strong> colonnes <code>text</code>
+et <code>generated</code> (0 ou 1). Les fichiers DRCAT peuvent avoir une
+colonne <code>label</code> qui est automatiquement renommée.</p>
+</blockquote>
+<h3 id="placement-des-fichiers">Placement des fichiers</h3>
+<pre><code>projet_final/
+└── data/
+    ├── llm-detect-ai-generated-text/
+    │   └── llm-detect-ai-generated-text/
+    │       ├── train_essays.csv
+    │       ├── test_essays.csv
+    │       └── sample_submission.csv
+    ├── train_drcat_01.csv
+    ├── train_drcat_02.csv
+    ├── train_drcat_03.csv
+    └── train_drcat_04.csv</code></pre>
+<hr />
+<h2 id="pipeline-complète">Pipeline complète</h2>
+<h3 id="étape-1-prétraitement-nettoyage">Étape 1 — Prétraitement &amp;
+Nettoyage</h3>
+<ul>
+<li>Fusion des sources Kaggle et DRCAT</li>
+<li>Nettoyage du texte (retrait des doublons, suppression des entrées
+vides, filtre <code>nchar &gt; 30</code>)</li>
+<li>Détection et correction des <code>NA</code> via
+<code>safe_texts()</code> (critique pour <code>itoken</code>)</li>
+</ul>
+<h3 id="étape-2-extraction-de-features-stylométriques">Étape 2 —
+Extraction de features stylométriques</h3>
+<p>17 métriques linguistiques extraites en parallèle (21 cœurs) avec
+mise en cache <code>.rds</code> :</p>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>char_count</code></td>
+<td>Nombre total de caractères</td>
+</tr>
+<tr>
+<td><code>word_count</code></td>
+<td>Nombre total de mots</td>
+</tr>
+<tr>
+<td><code>sent_count</code></td>
+<td>Nombre de phrases</td>
+</tr>
+<tr>
+<td><code>avg_sent_len</code></td>
+<td>Longueur moyenne des phrases (mots)</td>
+</tr>
+<tr>
+<td><code>sent_len_sd</code></td>
+<td><strong>Variabilité</strong> des longueurs de phrases ← discriminant
+fort</td>
+</tr>
+<tr>
+<td><code>avg_word_len</code></td>
+<td>Longueur moyenne des mots</td>
+</tr>
+<tr>
+<td><code>ttr</code></td>
+<td><strong>Type-Token Ratio</strong> — richesse du vocabulaire</td>
+</tr>
+<tr>
+<td><code>hapax_ratio</code></td>
+<td>Mots n’apparaissant qu’une seule fois</td>
+</tr>
+<tr>
+<td><code>flesch</code></td>
+<td>Score de lisibilité de Flesch (approché)</td>
+</tr>
+<tr>
+<td><code>lex_entropy</code></td>
+<td>Entropie lexicale</td>
+</tr>
+<tr>
+<td><code>punct_rate</code></td>
+<td>Taux de ponctuation</td>
+</tr>
+<tr>
+<td><code>comma_rate</code></td>
+<td>Taux de virgules</td>
+</tr>
+<tr>
+<td><code>upper_rate</code></td>
+<td>Taux de majuscules</td>
+</tr>
+<tr>
+<td><code>discourse_markers</code></td>
+<td>Connecteurs formels typiques des textes IA</td>
+</tr>
+<tr>
+<td><code>ai_phrases</code></td>
+<td>Expressions génériques détectées dans les textes IA</td>
+</tr>
+<tr>
+<td><code>long_word_rate</code></td>
+<td>Taux de mots longs (&gt; 6 caractères)</td>
+</tr>
+<tr>
+<td><code>char_bigram_entropy</code></td>
+<td><strong>Proxy de perplexité</strong> via entropie des bigrammes de
+caractères</td>
+</tr>
+</tbody>
+</table>
+<h3 id="étape-3-vectorisation-tf-idf-svd">Étape 3 — Vectorisation TF-IDF
++ SVD</h3>
+<pre><code>TF-IDF bigrammes :  128 668 documents × 332 486 termes
+         ↓ SVD tronquée (irlba, k = 150)
+Espace dense :      128 668 documents × 150 dimensions</code></pre>
+<ul>
+<li>Vocabulaire unigrammes + bigrammes
+(<code>ngram = c(1L, 2L)</code>)</li>
+<li>Filtres : <code>term_count_min = 5</code>,
+<code>doc_proportion_max = 0.45</code></li>
+<li>SVD : 54,7 % de la variance capturée dès k = 20 ; 100 % pour k = 150
+(variance relative aux 150 valeurs singulières calculées)</li>
+</ul>
+<h3 id="étape-4-analyse-factorielle-discriminante-afd">Étape 4 — Analyse
+Factorielle Discriminante (AFD)</h3>
+<p>L’AFD cherche la projection <strong>w</strong> maximisant le critère
+de Fisher :</p>
+<p><span class="math display">$$J(\mathbf{w}) = \frac{\mathbf{w}^\top
+S_B \,\mathbf{w}}{\mathbf{w}^\top S_W \,\mathbf{w}}$$</span></p>
+<p>avec <span class="math inline"><em>S</em><sub><em>B</em></sub></span>
+= dispersion inter-classes, <span
+class="math inline"><em>S</em><sub><em>W</em></sub></span> = dispersion
+intra-classes.</p>
+<p>Pour K = 2 classes, il existe <strong>un unique axe discriminant
+LD1</strong>.</p>
+<p><strong>Résultat obtenu :</strong></p>
+<table>
+<thead>
+<tr>
+<th>Métrique</th>
+<th>Valeur</th>
+<th>Interprétation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Moyenne LD1 Humain</td>
+<td>−1.715</td>
+<td>Projection négative</td>
+</tr>
+<tr>
+<td>Moyenne LD1 IA</td>
+<td>+4.560</td>
+<td>Projection positive</td>
+</tr>
+<tr>
+<td>Cohen’s d</td>
+<td><strong>5.49</strong></td>
+<td>Effet <strong>Grand</strong> (d &gt; 0.8)</td>
+</tr>
+<tr>
+<td>Score silhouette</td>
+<td><strong>0.806</strong></td>
+<td>Bonne séparation</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Justification de l’AFD linéaire :</strong> La forte
+séparation linéaire (Cohen’s d = 5.49) observée sur LD1 valide le choix
+de l’AFD classique. Une Kernel Discriminant Analysis (KDA) apporterait
+une complexité supplémentaire sans gain attendu dans ce contexte.</p>
+</blockquote>
+<h3 id="étape-5-classification-bayésienne-mcmc">Étape 5 — Classification
+Bayésienne MCMC</h3>
+<p>Modèle logistique bayésien :</p>
+<p><span
+class="math display">logit(<em>p</em><sub><em>i</em></sub>) = <em>α</em> + <em>β</em> ⋅ LD1<sub><em>i</em></sub></span></p>
+<table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Prior</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>β</td>
+<td>N(0, 2.5) autoscalé</td>
+<td>Régularisation Ridge bayésienne</td>
+</tr>
+<tr>
+<td>α</td>
+<td>N(0, 5)</td>
+<td>Prior diffus sur l’intercept</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Algorithme :</strong> NUTS (No-U-Turn Sampler), variante
+adaptative de HMC — 4 chaînes × 2000 itérations (warmup = 1000).</p>
+<p><strong>Diagnostics MCMC :</strong> - R̂ max = <strong>1.0006</strong>
+(seuil &lt; 1.01 ✅) - n_eff ≈ 1 600–3 200 (très satisfaisant) -
+Convergence confirmée sur toutes les chaînes</p>
+<p><strong>Estimations a posteriori (IC 95 %) :</strong></p>
+<table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Moyenne</th>
+<th>SD</th>
+<th>2.5%</th>
+<th>97.5%</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>α (Intercept)</td>
+<td>−3.064</td>
+<td>0.048</td>
+<td>−3.161</td>
+<td>−2.975</td>
+</tr>
+<tr>
+<td>β (LD1)</td>
+<td>+3.033</td>
+<td>0.044</td>
+<td>+2.951</td>
+<td>+3.123</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="structure-du-projet">Structure du projet</h2>
+<pre><code>projet_final/
+│
+├── data/                              # Données brutes (non versionnées)
+│   ├── llm-detect-ai-generated-text/
+│   └── train_drcat_0[1-4].csv
+│
+├── projet_final.Rmd                   # Document principal (code + rapport)
+├── projet_final.html                  # Rapport rendu (sortie RMarkdown)
+├── submission.csv                     # Prédictions pour soumission Kaggle
+│
+├── cache_stylo_all.rds               # Cache features stylométriques (train)
+├── cache_stylo_cv.rds                # Cache features stylométriques (CV)
+├── cache_stylo_test.rds              # Cache features stylométriques (test)
+│
+└── README.md                          # Ce fichier</code></pre>
+<hr />
+<h2 id="installation-et-dépendances">🔧 Installation et dépendances</h2>
+<h3 id="prérequis">Prérequis</h3>
+<ul>
+<li><strong>R</strong> ≥ 4.3.0</li>
+<li><strong>RStudio</strong> (recommandé) ou tout éditeur compatible
+RMarkdown</li>
+<li>Mémoire RAM recommandée : <strong>≥ 16 Go</strong> (dataset de 160
+000 textes)</li>
+<li>CPU multi-cœurs recommandé (extraction stylométrique parallélisée
+sur 21 cœurs)</li>
+</ul>
+<h3 id="installation-des-packages">Installation des packages</h3>
+<p>Coller dans la console R <strong>avant</strong> de lancer le render
+:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="fu">install.packages</span>(<span class="fu">c</span>(</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>  <span class="co"># Manipulation de données</span></span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>  <span class="st">&quot;readr&quot;</span>, <span class="st">&quot;dplyr&quot;</span>, <span class="st">&quot;stringr&quot;</span>, <span class="st">&quot;tidyr&quot;</span>, <span class="st">&quot;tibble&quot;</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a>  </span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>  <span class="co"># Visualisation</span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a>  <span class="st">&quot;ggplot2&quot;</span>, <span class="st">&quot;gridExtra&quot;</span>, <span class="st">&quot;scales&quot;</span>,</span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a>  </span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a>  <span class="co"># NLP / Vectorisation</span></span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a>  <span class="st">&quot;text2vec&quot;</span>, <span class="st">&quot;irlba&quot;</span>,</span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a>  </span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a>  <span class="co"># Topic modeling</span></span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a>  <span class="st">&quot;topicmodels&quot;</span>, <span class="st">&quot;slam&quot;</span>, <span class="st">&quot;tidytext&quot;</span>,</span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a>  </span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a>  <span class="co"># Modélisation</span></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a>  <span class="st">&quot;MASS&quot;</span>, <span class="st">&quot;caret&quot;</span>,</span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a>  </span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a>  <span class="co"># Classification Bayésienne MCMC</span></span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a>  <span class="st">&quot;rstanarm&quot;</span>,        <span class="co"># Stan — NUTS/HMC (backend principal)</span></span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a>  <span class="st">&quot;arm&quot;</span>,             <span class="co"># bayesglm — fallback si Stan non disponible</span></span>
+<span id="cb5-20"><a href="#cb5-20" tabindex="-1"></a>  <span class="st">&quot;bayesplot&quot;</span>,       <span class="co"># Visualisation des posteriors</span></span>
+<span id="cb5-21"><a href="#cb5-21" tabindex="-1"></a>  </span>
+<span id="cb5-22"><a href="#cb5-22" tabindex="-1"></a>  <span class="co"># Évaluation</span></span>
+<span id="cb5-23"><a href="#cb5-23" tabindex="-1"></a>  <span class="st">&quot;pROC&quot;</span>, <span class="st">&quot;cluster&quot;</span></span>
+<span id="cb5-24"><a href="#cb5-24" tabindex="-1"></a>))</span></code></pre></div>
+<blockquote>
+<p><strong>Important :</strong> <code>rstanarm</code> requiert
+l’installation de <strong>Stan</strong>. Sur Windows, il peut être
+nécessaire d’installer <a
+href="https://cran.r-project.org/bin/windows/Rtools/">Rtools</a> au
+préalable.<br />
+Si <code>rstanarm</code> n’est pas disponible, le code bascule
+automatiquement sur <code>arm::bayesglm</code> (estimateur MAP —
+fallback sans MCMC complet).</p>
+</blockquote>
+<hr />
+<h2 id="utilisation">Utilisation</h2>
+<h3 id="lancement-du-rapport-complet">Lancement du rapport complet</h3>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>rmarkdown<span class="sc">::</span><span class="fu">render</span>(<span class="st">&quot;projet_final.Rmd&quot;</span>)</span></code></pre></div>
+<p>Ou depuis le terminal :</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode powershell"><code class="sourceCode powershell"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="op">&amp;</span> <span class="st">&quot;C:\Program Files\R\R-4.5.2\bin\Rscript.exe&quot;</span> <span class="op">-</span>e <span class="st">&quot;rmarkdown::render(&#39;projet_final.Rmd&#39;)&quot;</span></span></code></pre></div>
+<h3 id="paramètres-clés-modifiables-dans-le-rmd">Paramètres clés
+modifiables dans le Rmd</h3>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>USE_RSTANARM <span class="ot">&lt;-</span> <span class="cn">TRUE</span>     <span class="co"># FALSE = utilise arm::bayesglm (plus rapide, moins complet)</span></span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>K_SVD        <span class="ot">&lt;-</span> <span class="dv">150</span>      <span class="co"># Nombre de dimensions SVD (compromis vitesse/précision)</span></span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>K_TOPICS     <span class="ot">&lt;-</span> <span class="dv">6</span>        <span class="co"># Nombre de topics LDA thématique</span></span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>MAX_CV_N     <span class="ot">&lt;-</span> <span class="dv">6000</span>     <span class="co"># Taille du sous-échantillon pour la validation croisée</span></span></code></pre></div>
+<h3 id="cache-stylométrique">Cache stylométrique</h3>
+<p>L’extraction stylométrique est <strong>mise en cache
+automatiquement</strong> (fichiers <code>.rds</code>). Pour forcer un
+recalcul, supprimez les fichiers <code>cache_stylo_*.rds</code> avant de
+relancer.</p>
+<hr />
+<h2 id="résultats">Résultats</h2>
+<h3 id="métriques-sur-lensemble-de-validation-8020-stratifié">Métriques
+sur l’ensemble de validation (80/20 stratifié)</h3>
+<table>
+<thead>
+<tr>
+<th>Métrique</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Accuracy</strong></td>
+<td><strong>99.34 %</strong></td>
+</tr>
+<tr>
+<td>Precision</td>
+<td>99.14 %</td>
+</tr>
+<tr>
+<td>Rappel (Sensibilité)</td>
+<td>98.49 %</td>
+</tr>
+<tr>
+<td>Spécificité</td>
+<td>99.67 %</td>
+</tr>
+<tr>
+<td><strong>F1-score</strong></td>
+<td><strong>98.81 %</strong></td>
+</tr>
+<tr>
+<td><strong>AUC-ROC</strong></td>
+<td><strong>0.9993</strong></td>
+</tr>
+<tr>
+<td><strong>Score de Brier</strong></td>
+<td><strong>0.0053</strong></td>
+</tr>
+<tr>
+<td>Kappa de Cohen</td>
+<td>0.9836</td>
+</tr>
+<tr>
+<td>Seuil optimal F1</td>
+<td>0.43</td>
+</tr>
+</tbody>
+</table>
+<h3 id="validation-croisée-5-fold-stratifiée">Validation croisée 5-fold
+stratifiée</h3>
+<table>
+<colgroup>
+<col width="25%" />
+<col width="25%" />
+<col width="25%" />
+<col width="25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Fold</th>
+<th>AUC</th>
+<th>Brier</th>
+<th>Accuracy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>0.9979</td>
+<td>0.0119</td>
+<td>98.67 %</td>
+</tr>
+<tr>
+<td>2</td>
+<td>0.9968</td>
+<td>0.0091</td>
+<td>99.08 %</td>
+</tr>
+<tr>
+<td>3</td>
+<td>0.9991</td>
+<td>0.0080</td>
+<td>99.00 %</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.9990</td>
+<td>0.0111</td>
+<td>98.25 %</td>
+</tr>
+<tr>
+<td>5</td>
+<td>0.9973</td>
+<td>0.0155</td>
+<td>98.08 %</td>
+</tr>
+<tr>
+<td><strong>Moyenne</strong></td>
+<td><strong>0.9980 ± 0.0010</strong></td>
+<td><strong>0.0111 ± 0.0029</strong></td>
+<td><strong>98.62 % ± 0.44 %</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="séparation-afd">Séparation AFD</h3>
+<pre><code>Classe Humain : LD1 = −1.715  (σ = 0.792)
+Classe IA     : LD1 = +4.560  (σ = 1.410)
+Cohen&#39;s d     : 5.49  →  Effet Grand
+Score silhouette : 0.806  →  Bonne séparation</code></pre>
+<h3 id="topics-lda-k-6-gibbs-sous-échantillon-5-000-docs">Topics LDA (k
+= 6, Gibbs, sous-échantillon 5 000 docs)</h3>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Thème identifié</th>
+<th>Mots clés</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Topic 1</td>
+<td>Éducation</td>
+<td>students, school, learning, classes</td>
+</tr>
+<tr>
+<td>Topic 2</td>
+<td>Transport / Vote</td>
+<td>car, driving, Electoral, vote</td>
+</tr>
+<tr>
+<td>Topic 3</td>
+<td>Conseil / Aide</td>
+<td>how, could, know, someone, better</td>
+</tr>
+<tr>
+<td>Topic 4</td>
+<td>Opinion personnelle</td>
+<td>we, think, want, good, my</td>
+</tr>
+<tr>
+<td>Topic 5</td>
+<td>Sciences / Espace</td>
+<td>Venus, face, author, is_a</td>
+</tr>
+<tr>
+<td>Topic 6</td>
+<td>Argumentation</td>
+<td>may, important, can_be, lead</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="méthodes-et-fondements-théoriques">Méthodes et fondements
+théoriques</h2>
+<h3 id="théorème-de-bayes">Théorème de Bayes</h3>
+<p><span
+class="math display"><em>P</em>(<strong>θ</strong> ∣ 𝒟) ∝ <em>P</em>(𝒟 ∣ <strong>θ</strong>) ⋅ <em>P</em>(<strong>θ</strong>)</span></p>
+<p>Le modèle logistique bayésien prédit la probabilité qu’un texte soit
+généré par IA. L’inférence complète via MCMC fournit des
+<strong>distributions a posteriori</strong> sur les paramètres, pas
+simplement des estimations ponctuelles.</p>
+<h3 id="critère-de-fisher-afd">Critère de Fisher (AFD)</h3>
+<p><span class="math display">$$J(\mathbf{w}) = \frac{\mathbf{w}^\top
+S_B \,\mathbf{w}}{\mathbf{w}^\top S_W \,\mathbf{w}}$$</span></p>
+<p>Résolu comme un problème aux valeurs propres généralisé <span
+class="math inline"><em>S</em><sub><em>W</em></sub><sup>−1</sup><em>S</em><sub><em>B</em></sub> <strong>w</strong> = <em>λ</em> <strong>w</strong></span>.</p>
+<h3 id="pourquoi-svd-avant-afd">Pourquoi SVD avant AFD ?</h3>
+<p>La matrice TF-IDF brute est <strong>creuse</strong> et de dimension
+&gt;&gt; 10 000 colonnes, rendant l’inversion de <span
+class="math inline"><em>S</em><sub><em>W</em></sub></span> numériquement
+instable. La SVD vers k = 150 dimensions denses (1) stabilise le calcul,
+(2) élimine le bruit lexical, (3) approche la normalité multivariée
+requise par l’AFD.</p>
+<h3 id="no-u-turn-sampler-nuts">No-U-Turn Sampler (NUTS)</h3>
+<p>Variante adaptative de HMC (Hamiltonian Monte Carlo) qui explore
+l’espace a posteriori bien plus efficacement que Metropolis-Hastings
+classique, évitant les random walks et le réglage manuel du pas
+d’intégration.</p>
+<hr />
+<h2 id="limites-et-travaux-futurs">Limites et travaux futurs</h2>
+<h3 id="limites-identifiées">Limites identifiées</h3>
+<ul>
+<li><strong>Performances élevées — interprétation prudente :</strong>
+Les textes IA du dataset LLM-Detect présentent des patterns stylistiques
+très distincts. Une validation par groupes (par source ou prompt)
+permettrait de détecter un éventuel leakage contextuel lié à la
+structure du dataset.</li>
+<li><strong>Jeu de test réduit :</strong> Le fichier
+<code>test_essays.csv</code> officiel Kaggle ne contient que 3 exemples
+— la pipeline de soumission est fonctionnelle quelle que soit la taille
+réelle du jeu de test.</li>
+<li><strong>Absence de perplexité réelle :</strong> La feature
+<code>char_bigram_entropy</code> est un proxy ; une vraie perplexité
+GPT-2 (via <code>reticulate</code>) serait plus discriminante.</li>
+</ul>
+<h3 id="travaux-futurs">Travaux futurs</h3>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Piste</th>
+<th>Bénéfice attendu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Perplexité GPT-2 via <code>reticulate</code></td>
+<td>Feature très discriminante documentée dans la littérature</td>
+</tr>
+<tr>
+<td>BERT / sentence embeddings</td>
+<td>Remplacement du TF-IDF par des représentations contextuelles</td>
+</tr>
+<tr>
+<td>Kernel Discriminant Analysis (KDA)</td>
+<td>Capturer d’éventuelles non-linéarités inter-classes</td>
+</tr>
+<tr>
+<td>Inférence variationnelle (<code>algorithm = "meanfield"</code>)</td>
+<td>Passage à l’échelle sur très grands corpus</td>
+</tr>
+<tr>
+<td>LOO-CV / WAIC via <code>rstanarm::loo()</code></td>
+<td>Comparaison formelle de modèles bayésiens</td>
+</tr>
+<tr>
+<td>Validation par groupe (leave-one-prompt-out)</td>
+<td>Évaluation de la robustesse hors-distribution</td>
+</tr>
+<tr>
+<td>Test de Box’s M</td>
+<td>Vérification de l’homoscédasticité (hypothèse AFD)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="références">Références</h2>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Référence</th>
+<th>Lien / Citation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Dataset LLM-Detect</strong></td>
+<td><a
+href="https://www.kaggle.com/competitions/llm-detect-ai-generated-text">Kaggle
+— LLM Detect AI Generated Text</a></td>
+</tr>
+<tr>
+<td><strong>Dataset DRCAT</strong></td>
+<td>Complément d’entraînement avec essais humains et IA</td>
+</tr>
+<tr>
+<td><strong>rstanarm</strong></td>
+<td>Goodrich et al. (2023). <em>rstanarm: Bayesian applied regression
+modeling via Stan.</em> CRAN</td>
+</tr>
+<tr>
+<td><strong>Stan / NUTS</strong></td>
+<td>Carpenter et al. (2017). <em>Stan: A probabilistic programming
+language.</em> JOSS</td>
+</tr>
+<tr>
+<td><strong>Fisher LDA</strong></td>
+<td>Fisher, R.A. (1936). <em>The use of multiple measurements in
+taxonomic problems.</em> Annals of Eugenics</td>
+</tr>
+<tr>
+<td><strong>SVD / LSA</strong></td>
+<td>Deerwester et al. (1990). <em>Indexing by Latent Semantic
+Analysis.</em> JASIS</td>
+</tr>
+<tr>
+<td><strong>irlba</strong></td>
+<td>Baglama &amp; Reichel (2005). <em>Augmented implicitly restarted
+Lanczos bidiagonalization methods.</em> SIAM</td>
+</tr>
+<tr>
+<td><strong>text2vec</strong></td>
+<td>Selivanov, D. (2023). <em>text2vec: Modern Text Mining Framework for
+R.</em> CRAN</td>
+</tr>
+<tr>
+<td><strong>Stylométrie</strong></td>
+<td>Stamatatos, E. (2009). <em>A survey of modern authorship attribution
+methods.</em> JASIS&amp;T</td>
+</tr>
+<tr>
+<td><strong>Score de Brier</strong></td>
+<td>Brier, G.W. (1950). <em>Verification of forecasts expressed in terms
+of probability.</em> Monthly Weather Review</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="auteurs">Auteurs</h2>
+<table>
+<thead>
+<tr>
+<th>Nom</th>
+<th>Email</th>
+<th>Établissement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TORRES Diego</td>
+<td>—</td>
+<td>ESIEE Paris</td>
+</tr>
+<tr>
+<td>WU Lucas</td>
+<td>—</td>
+<td>ESIEE Paris</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Encadrant :</strong> Badr TAJINI — ESIEE Paris<br />
+<strong>Cours :</strong> AP-4209 — E4 — 2025-2026<br />
+<strong>Rapport généré le :</strong> 19/02/2026</p>
+<hr />
+<p><em>README rédigé en correspondance avec le rapport
+<code>projet_final.html</code> et le sujet
+<code>final_project.pdf</code>.</em></p>

@@ -1,0 +1,169 @@
+---
+title: "Projet 1 - Emotion Classification"
+output: html_document
+---
+
+
+```{r}
+
+
+# =========================
+# 0) Packages + options
+# =========================
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+packages <- c("readr","dplyr","stringr","ggplot2","caret","tm","tidytext","e1071")
+missing <- packages[!sapply(packages, requireNamespace, quietly = TRUE)]
+if(length(missing) > 0){
+  install.packages(missing, repos = "https://cloud.r-project.org")
+}
+invisible(lapply(packages, library, character.only = TRUE))
+
+set.seed(42)
+
+# =========================
+# 1) Chargement des données
+# =========================
+df <- read_csv("data/Emotion_classify_Data.csv", show_col_types = FALSE)
+
+# Normalisation des noms de colonnes (au cas où)
+names(df) <- str_trim(names(df))
+
+# Vérifs minimales
+stopifnot(all(c("Comment","Emotion") %in% names(df)))
+
+df <- df %>%
+  mutate(
+    Comment = as.character(Comment),
+    Emotion = as.factor(Emotion)
+  ) %>%
+  filter(!is.na(Comment), !is.na(Emotion), Comment != "")
+
+cat("Taille dataset :", nrow(df), "lignes\n")
+cat("Classes :", paste(levels(df$Emotion), collapse = ", "), "\n")
+print(head(df, 5))
+
+# =========================
+# 2) Prétraitement texte
+# =========================
+clean_text <- function(x){
+  x %>%
+    str_to_lower() %>%
+    str_replace_all("http\\S+|www\\S+", " ") %>%      # liens
+    str_replace_all("[^a-z\\s]", " ") %>%            # garde lettres (anglais)
+    str_replace_all("\\s+", " ") %>%                 # espaces multiples
+    str_trim()
+}
+
+df <- df %>%
+  mutate(text_clean = clean_text(Comment)) %>%
+  filter(text_clean != "")
+
+# =========================
+# 3) Split train / test
+# =========================
+idx <- createDataPartition(df$Emotion, p = 0.8, list = FALSE)
+train <- df[idx, ]
+test  <- df[-idx, ]
+
+cat("Train :", nrow(train), " | Test :", nrow(test), "\n")
+
+# =========================
+# 4) Vectorisation TF-IDF (caret)
+# =========================
+# On passe par tm / DocumentTermMatrix via caret (solide et simple pour TD/projet)
+ctrl <- trainControl(method = "cv", number = 5)
+
+# preProcess via text2vec? non -> ici on reste simple avec caret + tm
+# caret sait gérer "text2vec" mais on garde une pipeline stable:
+dtm_control <- list(
+  weighting = weightTfIdf,
+  stopwords = TRUE,
+  removePunctuation = TRUE,
+  removeNumbers = TRUE,
+  stemming = FALSE
+)
+
+# On utilise la recette classique: créer DTM avec tm, puis modèles sur matrice
+make_tfidf <- function(text_vec){
+  corp <- VCorpus(VectorSource(text_vec))
+  corp <- tm_map(corp, content_transformer(clean_text))
+  corp <- tm_map(corp, removeWords, stopwords("en"))
+  corp <- tm_map(corp, stripWhitespace)
+
+  dtm <- DocumentTermMatrix(corp, control = list(wordLengths = c(2, Inf)))
+  tfidf <- weightTfIdf(dtm)
+  mat <- as.matrix(tfidf)
+
+  # On enlève colonnes vides
+  mat <- mat[, colSums(mat) > 0, drop = FALSE]
+  return(mat)
+}
+
+X_train <- make_tfidf(train$text_clean)
+X_test  <- make_tfidf(test$text_clean)
+
+# IMPORTANT: aligner les features train/test (mêmes colonnes)
+common_terms <- intersect(colnames(X_train), colnames(X_test))
+X_train <- X_train[, common_terms, drop = FALSE]
+X_test  <- X_test[, common_terms, drop = FALSE]
+
+cat("Nb features (TF-IDF) :", ncol(X_train), "\n")
+
+y_train <- train$Emotion
+y_test  <- test$Emotion
+
+# =========================
+# 5) Modèle : SVM linéaire (bon baseline texte)
+# =========================
+# e1071::svm sur matrice dense ok vu la taille; si trop lourd on passera à NB.
+svm_model <- svm(
+  x = X_train,
+  y = y_train,
+  kernel = "linear",
+  cost = 1,
+  scale = FALSE,
+  probability = FALSE
+)
+
+pred <- predict(svm_model, X_test)
+
+# =========================
+# 6) Évaluation
+# =========================
+cm <- confusionMatrix(pred, y_test)
+print(cm)
+
+# =========================
+# 7) Visus utiles (dataset + erreurs)
+# =========================
+# Répartition des classes
+p1 <- df %>%
+  count(Emotion) %>%
+  ggplot(aes(x = Emotion, y = n)) +
+  geom_col() +
+  theme_minimal() +
+  labs(title = "Répartition des émotions", x = "Emotion", y = "Nombre")
+
+print(p1)
+
+# Top confusions (où le modèle se trompe le plus)
+conf_df <- as.data.frame(cm$table) %>%
+  rename(Pred = Prediction, True = Reference, Freq = Freq) %>%
+  mutate(is_error = Pred != True) %>%
+  filter(is_error) %>%
+  arrange(desc(Freq)) %>%
+  head(10)
+
+cat("\nTop 10 confusions:\n")
+print(conf_df)
+
+# Exemples d'erreurs (10 lignes)
+err_examples <- test %>%
+  mutate(pred = pred) %>%
+  filter(pred != Emotion) %>%
+  select(Comment, Emotion, pred) %>%
+  head(10)
+
+cat("\nExemples d'erreurs (10):\n")
+print(err_examples)

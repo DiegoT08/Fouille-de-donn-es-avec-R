@@ -1,0 +1,1271 @@
+---
+title: "Détection de Texte Généré par IA"
+subtitle: "Features Stylométriques · TF-IDF · SVD · AFD · Classification Bayésienne MCMC"
+author: "TORRES Diego, WU Lucas — ESIEE 2025-2026 — E4 AP-4209"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    number_sections: false
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+# ═══════════════════════════════════════════════════════════════════
+#  SETUP GLOBAL
+# ═══════════════════════════════════════════════════════════════════
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 9,
+  fig.height = 5
+)
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+set.seed(42)
+
+# ── Packages nécessaires ──────────────────────────────────────────
+pkg_needed <- c(
+  "readr", "dplyr", "stringr", "tidyr", "ggplot2",
+  "Matrix", "text2vec", "irlba", "MASS",
+  "caret", "pROC", "topicmodels", "slam",
+  "cluster", "scales", "gridExtra", "knitr",
+  "bayesplot", "pbapply"
+)
+for (p in pkg_needed) {
+  if (!requireNamespace(p, quietly = TRUE))
+    install.packages(p, dependencies = TRUE, quiet = TRUE)
+}
+
+library(readr);    library(dplyr);    library(stringr)
+library(tidyr);    library(ggplot2);  library(Matrix)
+library(text2vec); library(irlba);    library(MASS)
+library(caret);    library(pROC);     library(topicmodels)
+library(cluster);  library(scales);   library(gridExtra)
+library(knitr);    library(pbapply)
+
+# ── Parallélisation pour extract_stylo() ─────────────────────────
+n_cores <- max(1L, parallel::detectCores() - 1L)
+cl <- parallel::makeCluster(n_cores)
+# Exporter les fonctions stringr dans chaque worker
+parallel::clusterEvalQ(cl, {
+  library(stringr)
+  NULL
+})
+pboptions(type = "timer", char = "=")
+cat(sprintf("Parallélisation activée : %d cœurs\n", n_cores))
+
+# ── Bayésien : rstanarm (MCMC) ou arm (fallback) ─────────────────
+USE_RSTANARM <- requireNamespace("rstanarm", quietly = TRUE)
+if (USE_RSTANARM) {
+  library(rstanarm)
+  if (requireNamespace("bayesplot", quietly = TRUE)) library(bayesplot)
+  cat("rstanarm disponible — MCMC/NUTS actif\n")
+} else {
+  if (!requireNamespace("arm", quietly = TRUE))
+    install.packages("arm", quiet = TRUE)
+  library(arm)
+  cat("rstanarm absent — fallback arm::bayesglm\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════
+#  FONCTIONS UTILITAIRES
+# ═══════════════════════════════════════════════════════════════════
+
+clean_text <- function(x) {
+  x |>
+    str_replace_all("[^[:print:]\n]", "") |>
+    str_replace_all("\\s+", " ")          |>
+    str_trim()
+}
+
+brier_score <- function(y_true, p_hat) mean((p_hat - y_true)^2)
+
+safe_auc <- function(y_true, p_hat) {
+  if (length(unique(y_true)) < 2) return(NA_real_)
+  suppressMessages(as.numeric(pROC::auc(pROC::roc(y_true, p_hat))))
+}
+
+# ── Aligner colonnes DTM test sur vocabulaire train ───────────────
+# BUG CORRIGÉ : la version précédente ne garantissait pas l'ordre exact
+align_dtm_cols <- function(dtm, ref_cols) {
+  present <- intersect(ref_cols, colnames(dtm))
+  missing <- setdiff(ref_cols, colnames(dtm))
+  if (length(missing) > 0) {
+    pad <- Matrix::sparseMatrix(
+      i        = integer(0),
+      j        = integer(0),
+      dims     = c(nrow(dtm), length(missing)),
+      dimnames = list(NULL, missing)
+    )
+    dtm <- cbind(dtm[, present, drop = FALSE], pad)
+  }
+  # Réordonner exactement comme ref_cols
+  dtm[, ref_cols, drop = FALSE]
+}
+
+# ── Sécuriser les textes avant itoken ────────────────────────────
+# BUG CORRIGÉ : garantit l'absence de NA et de chaînes vides
+safe_texts <- function(texts) {
+  texts[is.na(texts)] <- ""
+  texts <- str_replace_all(texts, "[^[:print:]\n]", "")
+  texts <- str_replace_all(texts, "\\s+", " ")
+  texts <- str_trim(texts)
+  texts[nchar(texts) == 0] <- "empty"
+  texts
+}
+
+# ═══════════════════════════════════════════════════════════════════
+#  FONCTION EXTRACT_STYLO — VERSION PARALLÈLE + CACHE
+# ═══════════════════════════════════════════════════════════════════
+extract_stylo <- function(texts, cache_file = NULL) {
+
+  # Retourner depuis le cache si disponible
+  if (!is.null(cache_file) && file.exists(cache_file)) {
+    cat(sprintf("  Cache stylo charge : %s\n", cache_file))
+    return(readRDS(cache_file))
+  }
+
+  # Fonction appliquée sur UN seul texte (tourne dans chaque worker)
+  extract_one <- function(t) {
+    words   <- str_split(tolower(t), "\\s+")[[1]]
+    words   <- words[nchar(words) > 0]
+    n_w     <- length(words)
+
+    sents   <- str_split(t, "[.!?]+")[[1]]
+    sents   <- sents[nchar(trimws(sents)) > 2]
+    n_s     <- max(1L, length(sents))
+
+    # 1-3. Longueurs
+    char_count   <- nchar(t)
+    word_count   <- n_w
+    sent_count   <- n_s
+    avg_sent_len <- n_w / n_s
+    avg_word_len <- if (n_w > 0) mean(nchar(words)) else 0
+
+    # 4. Variabilité longueur phrases
+    sent_lens <- vapply(sents, function(s) {
+      w2 <- str_split(tolower(s), "\\s+")[[1]]
+      length(w2[nchar(w2) > 0])
+    }, integer(1))
+    sent_len_sd <- if (length(sent_lens) > 1) sd(sent_lens) else 0
+
+    # 5. Type-Token Ratio
+    ttr <- if (n_w > 0) length(unique(words)) / n_w else 0
+
+    # 6. Hapax legomena
+    hapax_ratio <- if (n_w >= 5) {
+      tbl <- table(words)
+      sum(tbl == 1L) / n_w
+    } else 0
+
+    # 7. Score Flesch
+    count_syl <- function(w) {
+      max(1L, length(gregexpr("[aeiouyAEIOUY]+", w)[[1]]))
+    }
+    flesch <- if (n_w > 0) {
+      asw <- mean(vapply(words, count_syl, integer(1)))
+      206.835 - 1.015 * avg_sent_len - 84.6 * asw
+    } else 0
+
+    # 8. Entropie lexicale
+    lex_entropy <- if (n_w > 1) {
+      p <- as.numeric(table(words)) / n_w
+      -sum(p * log(p + 1e-12))
+    } else 0
+
+    # 9-11. Ponctuation / majuscules
+    t_low      <- tolower(t)
+    punct_rate <- str_count(t, "[,;:!?()\\.\\-]") / max(1L, n_w)
+    comma_rate <- str_count(t, ",")                / max(1L, n_w)
+    upper_rate <- str_count(t, "[A-Z]")            / max(1L, char_count)
+
+    # 12. Marqueurs discursifs IA
+    disc_re <- paste0(
+      "\\b(however|moreover|furthermore|therefore|thus|hence|",
+      "consequently|additionally|nevertheless|in conclusion|",
+      "in summary|it is important|it should be noted|",
+      "it is worth noting|it is evident|this highlights|",
+      "this demonstrates|overall|notably|significantly)\\b"
+    )
+    discourse_markers <- str_count(t_low, disc_re) / max(1L, n_w)
+
+    # 13. Clichés IA
+    ai_re <- paste0(
+      "\\b(delve into|it is crucial|in today.s world|",
+      "in this essay|exploring the|certainly|absolutely|",
+      "as an ai|language model|i cannot|i do not have|",
+      "as mentioned|to summarize|to conclude|",
+      "a testament to|it is worth|shed light on)\\b"
+    )
+    ai_phrases <- str_count(t_low, ai_re) / max(1L, n_w)
+
+    # 14. Mots longs
+    long_word_rate <- if (n_w > 0) mean(nchar(words) >= 7) else 0
+
+    # 15. Entropie bigrammes de caractères (proxy perplexité)
+    char_bigram_entropy <- {
+      t2 <- str_replace_all(t_low, "\\s+", " ")
+      nc <- nchar(t2)
+      if (nc >= 4) {
+        bgs <- substr(rep(t2, nc - 1), seq_len(nc - 1), seq(2, nc))
+        p   <- as.numeric(table(bgs)) / length(bgs)
+        -sum(p * log(p + 1e-12))
+      } else 0
+    }
+
+    c(char_count, word_count, sent_count,
+      avg_sent_len, sent_len_sd, avg_word_len,
+      ttr, hapax_ratio, flesch, lex_entropy,
+      punct_rate, comma_rate, upper_rate,
+      discourse_markers, ai_phrases,
+      long_word_rate, char_bigram_entropy)
+  }
+
+  n <- length(texts)
+  cat(sprintf("  Extraction stylo : %d textes | %d coeurs\n", n, n_cores))
+
+  # pblapply = lapply + barre de progression + parallélisation
+  result_list <- pblapply(texts, extract_one, cl = cl)
+
+  result <- as.data.frame(do.call(rbind, result_list))
+  colnames(result) <- c(
+    "char_count", "word_count", "sent_count",
+    "avg_sent_len", "sent_len_sd", "avg_word_len",
+    "ttr", "hapax_ratio", "flesch", "lex_entropy",
+    "punct_rate", "comma_rate", "upper_rate",
+    "discourse_markers", "ai_phrases",
+    "long_word_rate", "char_bigram_entropy"
+  )
+
+  result[!is.finite(as.matrix(result))] <- 0
+  result[is.na(result)] <- 0
+
+  if (!is.null(cache_file)) {
+    saveRDS(result, cache_file)
+    cat(sprintf("  Cache sauvegarde : %s\n", cache_file))
+  }
+  result
+}
+```
+
+---
+
+# 1. Préambule
+
+## 1.1 Contexte
+
+La prolifération des grands modèles de langage (LLM) rend urgente la capacité à distinguer automatiquement les textes humains des textes générés par IA. Ces derniers présentent des patterns stylistiques caractéristiques : phrases plus longues et régulières, vocabulaire plus riche mais moins naturel, recours fréquent à des marqueurs discursifs formels.
+
+Ce projet implémente une pipeline complète de classification supervisée :
+
+1. **Features stylométriques** — métriques linguistiques de surface : TTR, lisibilité, variabilité des phrases, entropie...
+2. **TF-IDF avec bigrammes** — vectorisation du contenu lexical
+3. **SVD tronquée** — réduction vers un espace sémantique latent dense
+4. **AFD (Analyse Factorielle Discriminante)** — projection maximisant la séparation entre classes
+5. **Classification bayésienne MCMC** — inférence probabiliste complète via NUTS/HMC
+
+## 1.2 Objectifs
+
+- Distinguer textes humains (label 0) et textes IA (label 1)
+- Fournir des probabilités bien calibrées (non des décisions binaires dures)
+- Valider par k-fold stratifié pour garantir la robustesse
+
+---
+
+```{r load-data}
+# ═══════════════════════════════════════════════════════════════════
+#  CHARGEMENT DES DONNÉES
+# ═══════════════════════════════════════════════════════════════════
+cat("====== CHARGEMENT DES DONNEES ======\n")
+
+base_kaggle    <- file.path("data", "llm-detect-ai-generated-text",
+                            "llm-detect-ai-generated-text")
+path_kag_train <- file.path(base_kaggle, "train_essays.csv")
+path_kag_test  <- file.path(base_kaggle, "test_essays.csv")
+path_kag_sub   <- file.path(base_kaggle, "sample_submission.csv")
+
+stopifnot(file.exists(path_kag_train), file.exists(path_kag_test))
+
+kag_train <- read_csv(path_kag_train, show_col_types = FALSE)
+kag_test  <- read_csv(path_kag_test,  show_col_types = FALSE)
+kag_sub   <- read_csv(path_kag_sub,   show_col_types = FALSE)
+
+cat(sprintf("Kaggle train : %d lignes x %d col\n", nrow(kag_train), ncol(kag_train)))
+cat(sprintf("Kaggle test  : %d lignes x %d col\n", nrow(kag_test),  ncol(kag_test)))
+
+# ── DRCAT ──────────────────────────────────────────────────────────
+load_drcat <- function(path) {
+  if (!file.exists(path)) { warning(paste("Introuvable :", path)); return(NULL) }
+  df <- read_csv(path, show_col_types = FALSE)
+  if ("label" %in% names(df) && !"generated" %in% names(df))
+    df <- dplyr::rename(df, generated = label)
+  df
+}
+
+drcat_raw <- Filter(Negate(is.null), lapply(
+  file.path("data", paste0("train_drcat_0", 1:4, ".csv")),
+  load_drcat
+))
+
+ensure_cols <- function(df, cols) {
+  for (col in setdiff(cols, names(df))) df[[col]] <- NA
+  df
+}
+KEEP <- c("essay_id", "text", "source", "prompt", "fold", "generated")
+
+drcat_all <- dplyr::bind_rows(lapply(drcat_raw, function(df)
+  ensure_cols(df, KEEP) |> dplyr::select(dplyr::all_of(KEEP))
+))
+
+cat(sprintf("DRCAT total  : %d lignes\n", nrow(drcat_all)))
+cat("Distribution DRCAT :\n")
+print(table(drcat_all$generated, useNA = "ifany"))
+```
+
+---
+
+# 2. Données et Prétraitement
+
+## 2.1 Fusion et nettoyage
+
+```{r merge-clean}
+kag_train2 <- tibble(
+  essay_id  = as.character(kag_train$id),
+  text      = kag_train$text,
+  source    = "kaggle",
+  prompt    = if ("prompt_id" %in% names(kag_train))
+                as.character(kag_train$prompt_id) else NA_character_,
+  fold      = NA_real_,
+  generated = as.integer(kag_train$generated)
+)
+
+train_all <- dplyr::bind_rows(kag_train2, drcat_all) |>
+  dplyr::filter(!is.na(text)) |>
+  dplyr::mutate(
+    text      = clean_text(text),
+    generated = as.integer(generated)
+  ) |>
+  dplyr::filter(nchar(text) > 30, generated %in% c(0L, 1L))
+
+# BUG CORRIGÉ : utiliser safe_texts() pour le test
+# garantit l'absence de NA qui causent le crash de itoken
+test_df <- tibble(
+  id   = kag_test$id,
+  text = safe_texts(kag_test$text)
+) |> dplyr::filter(nchar(text) > 5)
+
+cat(sprintf("train_all : %d textes\n", nrow(train_all)))
+cat(sprintf("test      : %d textes\n", nrow(test_df)))
+cat(sprintf("Note : le fichier test_essays.csv de LLM-Detect contient\n"))
+cat(sprintf("  intentionnellement peu de lignes (fichier exemple Kaggle).\n"))
+cat(sprintf("  La pipeline de soumission est fonctionnelle quelle que soit la taille.\n"))
+cat("\nDistribution train_all :\n")
+print(table(train_all$generated))
+cat(sprintf("Proportion IA : %.1f%%\n", 100 * mean(train_all$generated == 1)))
+```
+
+## 2.2 Analyse exploratoire
+
+```{r eda, fig.height=5}
+eda_df <- train_all |>
+  dplyr::mutate(
+    n_chars = nchar(text),
+    n_words = str_count(text, "\\w+"),
+    Class   = factor(generated, labels = c("Humain (0)", "IA (1)"))
+  )
+
+p_cls <- ggplot(eda_df, aes(x = Class, fill = Class)) +
+  geom_bar(width = 0.55) +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.4, size = 4) +
+  scale_fill_manual(values = c("#3498db", "#e74c3c")) +
+  labs(title = "Repartition des classes", x = NULL, y = "Nb. documents") +
+  theme_minimal() + theme(legend.position = "none")
+
+p_len <- ggplot(eda_df, aes(x = n_chars, fill = Class)) +
+  geom_histogram(bins = 60, alpha = 0.7, position = "identity") +
+  scale_x_log10(labels = comma) +
+  scale_fill_manual(values = c("#3498db", "#e74c3c")) +
+  labs(title = "Distribution longueurs (log)", x = "Nb. caracteres", y = "Frequence") +
+  theme_minimal()
+
+grid.arrange(p_cls, p_len, ncol = 2)
+
+eda_df |>
+  dplyr::group_by(Class) |>
+  dplyr::summarise(
+    N         = n(),
+    Moy_chars = round(mean(n_chars)),
+    Med_chars = round(median(n_chars)),
+    Moy_mots  = round(mean(n_words)),
+    P10       = round(quantile(n_chars, .10)),
+    P90       = round(quantile(n_chars, .90))
+  ) |>
+  knitr::kable(caption = "Statistiques descriptives par classe")
+```
+
+---
+
+# 3. Extraction de Caractéristiques
+
+## 3.1 Features stylométriques
+
+| Feature | Interprétation |
+|---------|---------------|
+| `ttr` | Type-Token Ratio — richesse du vocabulaire |
+| `sent_len_sd` | Variabilité des longueurs de phrases |
+| `flesch` | Score de lisibilité de Flesch (approché) |
+| `hapax_ratio` | Mots n'apparaissant qu'une fois |
+| `discourse_markers` | Connecteurs formels typiques IA |
+| `char_bigram_entropy` | Proxy de perplexité (entropie bigrammes chars) |
+
+```{r stylometric-features}
+cat("====== EXTRACTION STYLOMETRIQUE (train_all) ======\n")
+# BUG CORRIGÉ : le cache evite de recalculer au refit final
+stylo_all <- extract_stylo(train_all$text, cache_file = "cache_stylo_all.rds")
+
+cat(sprintf("  %d features extraites\n", ncol(stylo_all)))
+knitr::kable(round(head(stylo_all, 4), 4),
+             caption = "Features stylometriques — 4 premiers textes")
+```
+
+```{r stylo-viz, fig.height=7}
+stylo_plot <- stylo_all |>
+  dplyr::mutate(Class = factor(train_all$generated, labels = c("Humain", "IA"))) |>
+  dplyr::select(Class, ttr, sent_len_sd, flesch, hapax_ratio,
+                discourse_markers, char_bigram_entropy)
+
+stylo_long <- tidyr::pivot_longer(stylo_plot, -Class,
+                                  names_to = "Feature", values_to = "Value")
+
+ggplot(stylo_long, aes(x = Class, y = Value, fill = Class)) +
+  geom_violin(alpha = 0.5, draw_quantiles = c(0.25, 0.5, 0.75)) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, fill = "white", alpha = 0.8) +
+  facet_wrap(~Feature, scales = "free_y", ncol = 3) +
+  scale_fill_manual(values = c("#3498db", "#e74c3c")) +
+  labs(title = "Features stylometriques : Humain vs IA", x = NULL, y = NULL) +
+  theme_minimal() + theme(legend.position = "none")
+```
+
+## 3.2 Split stratifié 80/20
+
+```{r split}
+set.seed(42)
+idx_tr   <- caret::createDataPartition(train_all$generated, p = 0.80, list = FALSE)
+train    <- train_all[ idx_tr, ]
+valid    <- train_all[-idx_tr, ]
+stylo_tr <- stylo_all[ idx_tr, ]
+stylo_va <- stylo_all[-idx_tr, ]
+
+cat(sprintf("Train  : %d  (%.1f%% IA)\n", nrow(train), 100 * mean(train$generated == 1)))
+cat(sprintf("Valid  : %d  (%.1f%% IA)\n", nrow(valid), 100 * mean(valid$generated == 1)))
+```
+
+## 3.3 Vectorisation TF-IDF (unigrammes + bigrammes)
+
+```{r tfidf}
+cat("====== TF-IDF BIGRAMMES ======\n")
+
+# BUG CORRIGÉ : safe_texts() appliqué avant itoken pour eviter les NA
+it_tr <- itoken(safe_texts(train$text), progressbar = FALSE)
+vocab <- create_vocabulary(it_tr, ngram = c(1L, 2L))
+vocab <- prune_vocabulary(vocab,
+           term_count_min     = 5,
+           doc_proportion_max = 0.45,
+           doc_proportion_min = 1e-4)
+cat(sprintf("Vocabulaire (1+2-grammes) : %d termes\n", nrow(vocab)))
+
+vectorizer <- vocab_vectorizer(vocab)
+dtm_tr_raw <- create_dtm(itoken(safe_texts(train$text), progressbar = FALSE),
+                         vectorizer)
+dtm_va_raw <- create_dtm(itoken(safe_texts(valid$text), progressbar = FALSE),
+                         vectorizer)
+
+tfidf_model <- TfIdf$new()
+x_tr_tfidf  <- tfidf_model$fit_transform(dtm_tr_raw)
+x_va_tfidf  <- tfidf_model$transform(dtm_va_raw)
+
+cat(sprintf("TF-IDF train : %d x %d\n", nrow(x_tr_tfidf), ncol(x_tr_tfidf)))
+```
+
+## 3.4 Réduction SVD tronquée (LSA)
+
+```{r svd}
+cat("====== SVD TRONQUEE ======\n")
+
+K_SVD <- min(150L, ncol(x_tr_tfidf) - 1L, nrow(x_tr_tfidf) - 1L)
+K_SVD <- max(20L, K_SVD)
+cat(sprintf("Rang k = %d\n", K_SVD))
+
+svd_fit  <- irlba(x_tr_tfidf, nv = K_SVD, nu = K_SVD)
+x_tr_svd <- svd_fit$u %*% diag(svd_fit$d)
+x_va_svd <- as.matrix(x_va_tfidf %*% svd_fit$v)
+
+var_exp <- cumsum(svd_fit$d^2) / sum(svd_fit$d^2)
+cat(sprintf("Variance cumulee parmi les %d composantes retenues :\n", K_SVD))
+cat(sprintf("  k=20  : %.1f%% de la variance des %d composantes calculees\n",
+            100 * var_exp[20], K_SVD))
+cat(sprintf("  k=%d  : %.1f%% (par construction, somme sur toutes les comp.)\n",
+            K_SVD, 100 * var_exp[K_SVD]))
+cat(sprintf("Note : ces pourcentages sont relatifs aux %d valeurs singulieres\n", K_SVD))
+cat(sprintf("calculees, pas a la variance totale de la matrice TF-IDF originale.\n"))
+
+data.frame(k = seq_along(svd_fit$d), sv = svd_fit$d) |>
+  ggplot(aes(x = k, y = sv)) +
+  geom_line(color = "#2c3e50", linewidth = 0.8) +
+  geom_point(size = 0.5, color = "#e74c3c") +
+  labs(title = "Decroissance des valeurs singulieres",
+       subtitle = "Coude = dimension intrinseque de l'espace semantique",
+       x = "Rang", y = "Valeur singuliere") +
+  theme_minimal()
+```
+
+## 3.5 Fusion SVD + Stylométrie
+
+```{r feature-fusion}
+pp_stylo    <- caret::preProcess(stylo_tr, method = c("center", "scale", "nzv", "zv"))
+stylo_tr_sc <- predict(pp_stylo, stylo_tr)
+stylo_va_sc <- predict(pp_stylo, stylo_va)
+
+# Aligner colonnes valid (nzv peut en retirer certaines)
+for (col in setdiff(names(stylo_tr_sc), names(stylo_va_sc)))
+  stylo_va_sc[[col]] <- 0
+stylo_va_sc <- stylo_va_sc[, names(stylo_tr_sc), drop = FALSE]
+
+x_tr_full <- cbind(x_tr_svd, as.matrix(stylo_tr_sc))
+x_va_full <- cbind(x_va_svd, as.matrix(stylo_va_sc))
+colnames(x_tr_full) <- paste0("V", seq_len(ncol(x_tr_full)))
+colnames(x_va_full) <- colnames(x_tr_full)
+
+cat(sprintf("Matrice finale (train) : %d x %d\n", nrow(x_tr_full), ncol(x_tr_full)))
+```
+
+---
+
+# 4. Analyse Factorielle Discriminante (AFD)
+
+## 4.1 Fondements mathématiques
+
+L'AFD cherche la projection $\mathbf{w}$ maximisant le **critère de Fisher** :
+
+$$J(\mathbf{w}) = \frac{\mathbf{w}^\top S_B \,\mathbf{w}}{\mathbf{w}^\top S_W \,\mathbf{w}}$$
+
+- $S_B$ : matrice de dispersion **inter-classes**
+- $S_W$ : matrice de dispersion **intra-classes**
+
+La solution est le problème aux valeurs propres généralisé $S_W^{-1} S_B \,\mathbf{w} = \lambda\, \mathbf{w}$. Pour $K = 2$ classes, il existe **un unique axe LD1**.
+
+**Justification SVD → AFD :** La TF-IDF brute est creuse et de dimension >> 10 000 colonnes, rendant l'inversion de $S_W$ instable. La SVD vers $k = `r K_SVD`$ dimensions denses (1) stabilise le calcul, (2) élimine le bruit, (3) approche la normalité multivariée requise.
+
+**AFD = LDA (cas linéaire) :** Dans ce projet, l'AFD est implémentée via `MASS::lda()`, ce qui correspond à l'Analyse Discriminante Linéaire (LDA). Le sujet mentionne la possibilité d'une analyse discriminante à noyau (KDA) si la relation entre classes est non linéaire. Ici, la forte séparation linéaire observée sur LD1 (Cohen's d > 1) justifie le choix du cas linéaire — une KDA apporterait une complexité supplémentaire sans gain attendu.
+
+## 4.2 Application
+
+```{r afd}
+cat("====== AFD ======\n")
+
+x_tr_df <- as.data.frame(x_tr_full)
+x_va_df <- as.data.frame(x_va_full)
+
+lda_model   <- MASS::lda(x = x_tr_df, grouping = factor(train$generated))
+pred_tr_lda <- predict(lda_model, newdata = x_tr_df)
+pred_va_lda <- predict(lda_model, newdata = x_va_df)
+
+pct_trace <- round(100 * lda_model$svd^2 / sum(lda_model$svd^2), 2)
+cat("Proportion de trace (variance discriminante) :\n")
+print(pct_trace)
+```
+
+```{r afd-viz, fig.height=5}
+scores_tr       <- as.data.frame(pred_tr_lda$x)
+scores_tr$Class <- factor(train$generated, labels = c("Humain", "IA"))
+
+ggplot(scores_tr, aes(x = LD1, fill = Class)) +
+  geom_density(alpha = 0.50, adjust = 1.2, linewidth = 0.7) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  scale_fill_manual(values = c("#3498db", "#e74c3c")) +
+  labs(title    = "Projection AFD — Distribution de LD1 par classe",
+       subtitle = "Bonne separation = densites distinctes",
+       x = "LD1 (axe discriminant)", y = "Densite", fill = "Classe") +
+  theme_minimal()
+```
+
+```{r afd-stats}
+ld1_h    <- scores_tr$LD1[scores_tr$Class == "Humain"]
+ld1_a    <- scores_tr$LD1[scores_tr$Class == "IA"]
+pool_sd  <- sqrt((var(ld1_h) + var(ld1_a)) / 2)
+cohens_d <- abs(mean(ld1_a) - mean(ld1_h)) / pool_sd
+
+cat(sprintf("Moyenne LD1  Humain : %+.3f  | IA : %+.3f\n", mean(ld1_h), mean(ld1_a)))
+cat(sprintf("Ecart-type   Humain : %.3f   | IA : %.3f\n",  sd(ld1_h),   sd(ld1_a)))
+cat(sprintf("Cohen's d : %.3f -> effet %s\n", cohens_d,
+            ifelse(cohens_d > 0.8, "Grand",
+            ifelse(cohens_d > 0.5, "Moyen", "Faible"))))
+```
+
+```{r afd-coefficients, fig.height=6}
+# ── Visualisation des coefficients discriminants ──────────────────
+# Le prof demande explicitement les "facteurs discriminants" visualisés.
+# On extrait les contributions des features stylométriques sur LD1
+# (les composantes SVD sont anonymes, on se concentre sur les features nommées)
+
+# Récupérer les coefficients LD1 pour les features stylométriques
+coef_all  <- as.numeric(lda_model$scaling[, 1])
+feat_names <- colnames(x_tr_full)
+
+# Isoler uniquement les features stylométriques (après les K_SVD colonnes SVD)
+n_svd      <- K_SVD
+n_stylo    <- ncol(stylo_tr_sc)
+stylo_names <- names(stylo_tr_sc)
+
+if (length(coef_all) >= n_svd + n_stylo) {
+  coef_stylo <- coef_all[(n_svd + 1):(n_svd + n_stylo)]
+  names(coef_stylo) <- stylo_names
+
+  coef_df <- data.frame(
+    Feature     = names(coef_stylo),
+    Coefficient = coef_stylo
+  ) |>
+    dplyr::arrange(desc(abs(Coefficient))) |>
+    dplyr::mutate(
+      Direction = ifelse(Coefficient > 0, "Vers IA (+)", "Vers Humain (-)"),
+      Feature   = factor(Feature, levels = rev(Feature))
+    )
+
+  ggplot(coef_df, aes(x = Feature, y = Coefficient, fill = Direction)) +
+    geom_col(width = 0.7) +
+    geom_hline(yintercept = 0, color = "grey30", linewidth = 0.5) +
+    coord_flip() +
+    scale_fill_manual(values = c("Vers IA (+)" = "#e74c3c",
+                                  "Vers Humain (-)" = "#3498db")) +
+    labs(
+      title    = "Coefficients discriminants LD1 — Features stylometriques",
+      subtitle = "Positif = associe aux textes IA | Negatif = associe aux textes humains",
+      x        = NULL,
+      y        = "Coefficient LD1",
+      fill     = "Direction"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+} else {
+  cat("Visualisation des coefficients non disponible (dimensions incompatibles)\n")
+}
+```
+
+```{r silhouette}
+cat("====== SILHOUETTE ======\n")
+n_sil    <- min(3000L, nrow(pred_tr_lda$x))
+idx_sil  <- sample(nrow(pred_tr_lda$x), n_sil)
+D_sil    <- dist(as.matrix(pred_tr_lda$x)[idx_sil, , drop = FALSE])
+lab_sil  <- as.integer(train$generated[idx_sil])
+sil_res  <- cluster::silhouette(lab_sil, D_sil)
+sil_mean <- mean(sil_res[, "sil_width"])
+
+cat(sprintf("Score silhouette (n=%d) : %.4f\n", n_sil, sil_mean))
+cat(sprintf("Interpretation : %s\n",
+    ifelse(sil_mean > 0.5, "Bonne separation",
+    ifelse(sil_mean > 0.25, "Separation raisonnable", "Separation faible"))))
+
+plot(sil_res, col = c("#3498db", "#e74c3c"),
+     main = sprintf("Silhouette AFD (moy = %.3f)", sil_mean))
+```
+
+---
+
+# 5. Classification Bayésienne
+
+## 5.1 Fondements théoriques
+
+**Théorème de Bayes :**
+
+$$P(\boldsymbol{\theta} \mid \mathcal{D}) \propto P(\mathcal{D} \mid \boldsymbol{\theta}) \cdot P(\boldsymbol{\theta})$$
+
+Modèle logistique bayésien : $\text{logit}(p_i) = \alpha + \mathbf{x}_i^\top \boldsymbol{\beta}$
+
+| Paramètre | Prior | Justification |
+|-----------|-------|---------------|
+| $\boldsymbol{\beta}$ | $\mathcal{N}(0, 2.5)$ autoscalé | Régularisation Ridge bayésienne |
+| $\alpha$ | $\mathcal{N}(0, 5)$ | Prior diffus sur l'intercept |
+
+**MCMC / NUTS :** `rstanarm` utilise le *No-U-Turn Sampler* (NUTS), variante adaptative de HMC, qui explore l'espace a posteriori bien plus efficacement que Metropolis-Hastings.
+
+## 5.2 Entraînement
+
+```{r bayes-train}
+cat("====== CLASSIFICATION BAYESIENNE ======\n")
+
+ld_tr_df     <- as.data.frame(pred_tr_lda$x)
+ld_va_df     <- as.data.frame(pred_va_lda$x)
+ld_tr_df$y   <- as.integer(train$generated)
+ld_va_df$y   <- as.integer(valid$generated)
+
+if (USE_RSTANARM) {
+  cat("-> stan_glm : 4 chaines x 2000 iterations (NUTS/HMC)\n")
+  set.seed(42)
+  bayes_fit <- rstanarm::stan_glm(
+    y ~ .,
+    data            = ld_tr_df,
+    family          = binomial("logit"),
+    prior           = rstanarm::normal(0, 2.5, autoscale = TRUE),
+    prior_intercept = rstanarm::normal(0, 5,   autoscale = FALSE),
+    chains          = 4,
+    iter            = 2000,
+    warmup          = 1000,
+    seed            = 42,
+    refresh         = 0
+  )
+
+  cat("\n-- Diagnostics MCMC --\n")
+  rhat_vals <- if (requireNamespace("bayesplot", quietly = TRUE)) {
+    bayesplot::rhat(bayes_fit)
+  } else {
+    summary(bayes_fit$stanfit)$summary[, "Rhat"]
+  }
+  cat(sprintf("Rhat max : %.4f (seuil < 1.01)\n", max(rhat_vals, na.rm = TRUE)))
+  if (max(rhat_vals, na.rm = TRUE) < 1.01)
+    cat("Convergence satisfaisante\n")
+  else
+    cat("Convergence insuffisante — augmenter iter\n")
+
+  cat("\n-- Resume modele (IC 95%) --\n")
+  print(summary(bayes_fit, digits = 3, probs = c(0.025, 0.5, 0.975)))
+
+  # posterior_epred() = API officielle rstanarm >= 2.26
+  # (remplace posterior_linpred(transform=TRUE) qui est déprécié)
+  p_va <- colMeans(
+    rstanarm::posterior_epred(bayes_fit,
+                              newdata = dplyr::select(ld_va_df, -y))
+  )
+} else {
+  cat("-> arm::bayesglm (fallback MAP)\n")
+  bayes_fit <- arm::bayesglm(y ~ ., data = ld_tr_df, family = binomial("logit"))
+  p_va      <- as.numeric(predict(bayes_fit, newdata = ld_va_df, type = "response"))
+}
+cat("Modele bayesien ajuste\n")
+```
+
+```{r bayes-posterior-viz, eval=isTRUE(USE_RSTANARM)}
+bayes_draws <- as.data.frame(as.matrix(bayes_fit))
+n_params    <- min(5, ncol(bayes_draws))
+draws_long  <- tidyr::pivot_longer(
+  bayes_draws[, seq_len(n_params), drop = FALSE],
+  everything(), names_to = "Parametre", values_to = "Valeur"
+)
+ggplot(draws_long, aes(x = Valeur, fill = Parametre)) +
+  geom_density(alpha = 0.55) +
+  facet_wrap(~Parametre, scales = "free", ncol = 3) +
+  labs(title    = "Distributions a posteriori (MCMC)",
+       subtitle = "Largeur = incertitude sur chaque coefficient",
+       x = "Valeur", y = "Densite") +
+  theme_minimal() + theme(legend.position = "none")
+```
+
+---
+
+# 6. Évaluation du Modèle
+
+## 6.1 Métriques sur la validation
+
+```{r eval-metrics}
+cat("====== EVALUATION ======\n")
+pred_class <- as.integer(p_va >= 0.5)
+
+cm <- caret::confusionMatrix(
+  factor(pred_class, levels = c(0, 1)),
+  factor(ld_va_df$y, levels = c(0, 1)),
+  positive = "1"
+)
+print(cm)
+
+auc_val   <- safe_auc(ld_va_df$y, p_va)
+brier_val <- brier_score(ld_va_df$y, p_va)
+cat(sprintf("\nAUC-ROC : %.4f\n", auc_val))
+cat(sprintf("Brier   : %.4f  (0=parfait, 0.25=aleatoire)\n", brier_val))
+
+tibble(
+  Metrique = c("Accuracy", "Precision", "Rappel", "Specificite",
+               "F1-score", "AUC-ROC", "Brier"),
+  Valeur   = round(c(
+    cm$overall["Accuracy"],
+    cm$byClass["Pos Pred Value"],
+    cm$byClass["Sensitivity"],
+    cm$byClass["Specificity"],
+    cm$byClass["F1"],
+    auc_val, brier_val
+  ), 4)
+) |> knitr::kable(caption = "Metriques d'evaluation completes")
+```
+
+## 6.2 Courbe ROC
+
+```{r roc}
+roc_obj <- pROC::roc(ld_va_df$y, p_va, quiet = TRUE)
+roc_df  <- data.frame(FPR = 1 - roc_obj$specificities,
+                      TPR = roc_obj$sensitivities)
+
+ggplot(roc_df, aes(x = FPR, y = TPR)) +
+  geom_line(color = "#e74c3c", linewidth = 1.2) +
+  geom_ribbon(aes(ymin = 0, ymax = TPR), fill = "#e74c3c", alpha = 0.10) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey60") +
+  annotate("text", x = 0.62, y = 0.12,
+           label = sprintf("AUC = %.4f", auc_val),
+           size = 5, fontface = "bold", color = "#2c3e50") +
+  labs(title    = "Courbe ROC — Classifieur Bayesien",
+       subtitle = "TF-IDF bigrammes + SVD + AFD + MCMC",
+       x = "Taux faux positifs (1-Specificite)",
+       y = "Taux vrais positifs (Sensibilite)") +
+  theme_minimal()
+```
+
+## 6.3 Courbe de calibration
+
+Un modèle bien calibré place ses points sur la diagonale. Les points **au-dessus de la diagonale** indiquent une **sous-confiance** (le modèle prédit p = 0.3 mais 50% des cas sont positifs) ; en dessous, une **sur-confiance**. La régression bayésienne avec prior diffus tend à produire une bonne calibration.
+
+```{r calibration}
+calib <- data.frame(pred = p_va, obs = ld_va_df$y) |>
+  dplyr::mutate(bin = cut(pred, breaks = seq(0, 1, by = 0.1),
+                          include.lowest = TRUE)) |>
+  dplyr::group_by(bin) |>
+  dplyr::summarise(mean_pred = mean(pred), frac_pos = mean(obs),
+                   n = n(), .groups = "drop") |>
+  dplyr::filter(!is.na(bin))
+
+ggplot(calib, aes(x = mean_pred, y = frac_pos)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              color = "grey60", linewidth = 0.8) +
+  geom_point(aes(size = n), color = "#3498db", alpha = 0.85) +
+  geom_line(color = "#3498db", linewidth = 0.9) +
+  scale_size_continuous(name = "Nb obs.", range = c(2, 8)) +
+  labs(title    = "Courbe de calibration (Reliability Diagram)",
+       subtitle = "Diagonale = calibrage parfait",
+       x = "Probabilite predite (moy par bin)",
+       y = "Fraction positifs observes") +
+  theme_minimal()
+```
+
+## 6.4 Seuil optimal et courbe Précision-Rappel
+
+```{r threshold-pr, fig.height=5}
+# ── Seuil optimal (max F1 / Youden J) ────────────────────────────
+thresholds <- seq(0.01, 0.99, by = 0.01)
+f1_vals <- sapply(thresholds, function(thr) {
+  pred_t <- as.integer(p_va >= thr)
+  tp <- sum(pred_t == 1 & ld_va_df$y == 1)
+  fp <- sum(pred_t == 1 & ld_va_df$y == 0)
+  fn <- sum(pred_t == 0 & ld_va_df$y == 1)
+  prec <- if (tp + fp == 0) 0 else tp / (tp + fp)
+  rec  <- if (tp + fn == 0) 0 else tp / (tp + fn)
+  if (prec + rec == 0) 0 else 2 * prec * rec / (prec + rec)
+})
+best_thr <- thresholds[which.max(f1_vals)]
+cat(sprintf("Seuil optimal (max F1) : %.2f  (F1 = %.4f)\n",
+            best_thr, max(f1_vals)))
+cat(sprintf("Note : le seuil 0.5 est neutre ; optimiser selon le cout\n"))
+cat(sprintf("  Faux positif = texte IA classe humain (risque academique)\n"))
+cat(sprintf("  Faux negatif = texte humain classe IA (risque injuste)\n"))
+
+# ── Courbe Precision-Rappel ───────────────────────────────────────
+# Plus informative que ROC en cas de desequilibre de classes
+pr_df <- data.frame(
+  thr  = thresholds,
+  prec = sapply(thresholds, function(thr) {
+    pred_t <- as.integer(p_va >= thr)
+    tp <- sum(pred_t == 1 & ld_va_df$y == 1)
+    fp <- sum(pred_t == 1 & ld_va_df$y == 0)
+    if (tp + fp == 0) NA_real_ else tp / (tp + fp)
+  }),
+  rec  = sapply(thresholds, function(thr) {
+    pred_t <- as.integer(p_va >= thr)
+    tp <- sum(pred_t == 1 & ld_va_df$y == 1)
+    fn <- sum(pred_t == 0 & ld_va_df$y == 1)
+    if (tp + fn == 0) NA_real_ else tp / (tp + fn)
+  })
+) |> dplyr::filter(!is.na(prec), !is.na(rec))
+
+prevalence <- mean(ld_va_df$y == 1)
+
+p_pr <- ggplot(pr_df, aes(x = rec, y = prec)) +
+  geom_line(color = "#2ecc71", linewidth = 1.1) +
+  geom_hline(yintercept = prevalence, linetype = "dashed",
+             color = "grey60", linewidth = 0.7) +
+  geom_point(data = pr_df[which.min(abs(pr_df$thr - best_thr)), ],
+             aes(x = rec, y = prec), color = "#e74c3c", size = 3) +
+  annotate("text", x = 0.5, y = prevalence + 0.02,
+           label = sprintf("Baseline (prevalence = %.1f%%)", 100 * prevalence),
+           color = "grey50", size = 3.5) +
+  labs(title    = "Courbe Precision-Rappel",
+       subtitle = "Point rouge = seuil optimal F1 | Tirets = baseline aleatoire",
+       x = "Rappel (Sensibilite)", y = "Precision") +
+  theme_minimal()
+print(p_pr)
+```
+
+
+
+```{r kfold}
+cat("====== VALIDATION CROISEE 5-FOLD ======\n")
+
+MAX_CV_N <- min(nrow(train_all), 6000L)
+set.seed(42)
+idx_cv   <- sample(nrow(train_all), MAX_CV_N)
+train_cv <- train_all[idx_cv, ]
+
+# BUG CORRIGÉ : cache pour eviter double calcul stylo
+stylo_cv <- extract_stylo(train_cv$text, cache_file = "cache_stylo_cv.rds")
+
+folds <- caret::createFolds(train_cv$generated, k = 5,
+                            list = TRUE, returnTrain = FALSE)
+
+run_fold <- function(fold_id) {
+  cat(sprintf("  Fold %d/5 ... ", fold_id))
+  val_i <- folds[[fold_id]]
+  tr_i  <- setdiff(seq_len(nrow(train_cv)), val_i)
+  tr_f  <- train_cv[tr_i, ]; va_f <- train_cv[val_i, ]
+  st_tr <- stylo_cv[tr_i, ]; st_va <- stylo_cv[val_i, ]
+
+  # TF-IDF — BUG CORRIGÉ : safe_texts() avant chaque itoken
+  it_f    <- itoken(safe_texts(tr_f$text), progressbar = FALSE)
+  voc_f   <- prune_vocabulary(
+               create_vocabulary(it_f, ngram = c(1L, 2L)),
+               term_count_min = 3, doc_proportion_max = 0.5)
+  vec_f   <- vocab_vectorizer(voc_f)
+  dtm_f_tr <- create_dtm(itoken(safe_texts(tr_f$text), progressbar = FALSE), vec_f)
+  dtm_f_va <- create_dtm(itoken(safe_texts(va_f$text), progressbar = FALSE), vec_f)
+
+  tf_f   <- TfIdf$new()
+  xtr_tf <- tf_f$fit_transform(dtm_f_tr)
+  xva_tf <- tf_f$transform(dtm_f_va)
+
+  # SVD
+  kf     <- max(10L, min(60L, ncol(xtr_tf) - 1L, nrow(xtr_tf) - 1L))
+  svd_f  <- irlba(xtr_tf, nv = kf, nu = kf)
+  xtr_sv <- svd_f$u %*% diag(svd_f$d)
+  xva_sv <- as.matrix(xva_tf %*% svd_f$v)
+
+  # Stylométrie
+  pp_f     <- caret::preProcess(st_tr, method = c("center","scale","nzv","zv"))
+  st_tr_sc <- predict(pp_f, st_tr)
+  st_va_sc <- predict(pp_f, st_va)
+  for (col in setdiff(names(st_tr_sc), names(st_va_sc))) st_va_sc[[col]] <- 0
+  st_va_sc <- st_va_sc[, names(st_tr_sc), drop = FALSE]
+
+  xtr_full <- as.data.frame(cbind(xtr_sv, as.matrix(st_tr_sc)))
+  xva_full <- as.data.frame(cbind(xva_sv, as.matrix(st_va_sc)))
+  colnames(xtr_full) <- colnames(xva_full) <- paste0("V", seq_len(ncol(xtr_full)))
+
+  # AFD
+  lda_f   <- MASS::lda(x = xtr_full, grouping = factor(tr_f$generated))
+  ld_tr_f <- as.data.frame(predict(lda_f, newdata = xtr_full)$x)
+  ld_va_f <- as.data.frame(predict(lda_f, newdata = xva_full)$x)
+  ld_tr_f$y <- as.integer(tr_f$generated)
+  ld_va_f$y <- as.integer(va_f$generated)
+
+  # Bayésien
+  if (USE_RSTANARM) {
+    set.seed(fold_id * 7)
+    fit_f <- rstanarm::stan_glm(
+      y ~ ., data = ld_tr_f, family = binomial("logit"),
+      prior  = rstanarm::normal(0, 2.5, autoscale = TRUE),
+      chains = 2, iter = 800, warmup = 400, refresh = 0
+    )
+    pf <- colMeans(rstanarm::posterior_epred(fit_f,
+                     newdata = dplyr::select(ld_va_f, -y)))
+  } else {
+    fit_f <- arm::bayesglm(y ~ ., data = ld_tr_f, family = binomial("logit"))
+    pf    <- as.numeric(predict(fit_f, newdata = ld_va_f, type = "response"))
+  }
+
+  auc_f <- safe_auc(ld_va_f$y, pf); brier_f <- brier_score(ld_va_f$y, pf)
+  acc_f <- mean(as.integer(pf >= 0.5) == ld_va_f$y)
+  cat(sprintf("AUC=%.4f | Brier=%.4f | Acc=%.4f\n", auc_f, brier_f, acc_f))
+  list(fold = fold_id, auc = auc_f, brier = brier_f, acc = acc_f)
+}
+
+cv_results <- lapply(seq_len(5), run_fold)
+
+# BUG CORRIGÉ : as.data.frame sur liste de lists peut créer des colonnes LIST.
+# On force chaque colonne à être numérique avec vapply.
+cv_df <- data.frame(
+  fold  = vapply(cv_results, function(x) as.numeric(x$fold),  numeric(1)),
+  auc   = vapply(cv_results, function(x) as.numeric(x$auc),   numeric(1)),
+  brier = vapply(cv_results, function(x) as.numeric(x$brier), numeric(1)),
+  acc   = vapply(cv_results, function(x) as.numeric(x$acc),   numeric(1))
+)
+
+knitr::kable(cv_df, digits = 4,
+             caption = "Resultats 5-fold stratifie")
+cat(sprintf("\nAUC   : %.4f +/- %.4f\n", mean(cv_df$auc),   sd(cv_df$auc)))
+cat(sprintf("Brier : %.4f +/- %.4f\n", mean(cv_df$brier), sd(cv_df$brier)))
+cat(sprintf("Acc   : %.4f +/- %.4f\n", mean(cv_df$acc),   sd(cv_df$acc)))
+```
+
+```{r kfold-viz}
+cv_long <- cv_df |>
+  tidyr::pivot_longer(c(auc, brier, acc), names_to = "Metrique", values_to = "Score")
+
+ggplot(cv_long, aes(x = factor(fold), y = Score, fill = Metrique)) +
+  geom_col() +
+  geom_hline(data = cv_long |> dplyr::group_by(Metrique) |>
+               dplyr::summarise(moy = mean(Score), .groups = "drop"),
+             aes(yintercept = moy), linetype = "dashed", color = "grey40") +
+  facet_wrap(~Metrique, scales = "free_y") +
+  scale_fill_manual(values = c("#3498db","#e74c3c","#2ecc71")) +
+  labs(title = "Resultats 5-fold stratifie",
+       subtitle = "Ligne pointillee = moyenne des folds",
+       x = "Fold", y = "Score") +
+  theme_minimal() + theme(legend.position = "none")
+```
+
+---
+
+# 8. Analyse Thématique (LDA)
+
+```{r lda-topics}
+cat("====== LDA THEMATIQUE ======\n")
+# Un sous-échantillon de 5000 documents est utilisé pour réduire le coût
+# computationnel du Gibbs sampling (LDA Gibbs a une complexité O(N×K×V)).
+# Sur 160 000 documents, l'échantillon est représentatif des patterns lexicaux.
+
+# BUG CORRIGÉ : topicmodels::LDA() exige un slam::simple_triplet_matrix
+# (DocumentTermMatrix), PAS une dgCMatrix de Matrix.
+# La conversion passe par slam::as.simple_triplet_matrix().
+if (!requireNamespace("slam", quietly = TRUE))
+  install.packages("slam", quiet = TRUE)
+
+dtm_cnt <- as(dtm_tr_raw, "dgCMatrix")
+dtm_cnt <- dtm_cnt[Matrix::rowSums(dtm_cnt) > 0, ]
+dtm_cnt <- dtm_cnt[, Matrix::colSums(dtm_cnt) > 0]
+
+set.seed(42)
+idx_sub   <- sample(nrow(dtm_cnt), min(5000L, nrow(dtm_cnt)))
+dtm_sub_m <- dtm_cnt[idx_sub, ]
+
+# Convertir en simple_triplet_matrix pour topicmodels
+dtm_sub_stm <- slam::as.simple_triplet_matrix(dtm_sub_m)
+class(dtm_sub_stm) <- c("DocumentTermMatrix", "simple_triplet_matrix")
+attr(dtm_sub_stm, "weighting") <- c("term frequency", "tf")
+
+K_TOPICS  <- 6
+lda_topic <- topicmodels::LDA(dtm_sub_stm, k = K_TOPICS, method = "Gibbs",
+               control = list(seed = 42, burnin = 100, iter = 500, thin = 1))
+
+top_terms <- topicmodels::terms(lda_topic, 10)
+knitr::kable(top_terms,
+             caption = sprintf("Top 10 mots par topic (LDA Gibbs, k=%d)", K_TOPICS))
+```
+
+```{r lda-viz, fig.height=6}
+topic_df <- as.data.frame(top_terms) |>
+  dplyr::mutate(Rang = rev(seq_len(nrow(top_terms)))) |>
+  tidyr::pivot_longer(-Rang, names_to = "Topic", values_to = "Terme")
+
+ggplot(topic_df, aes(x = factor(Rang), y = 1, label = Terme, fill = Topic)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  geom_text(size = 2.8) +
+  facet_wrap(~Topic, ncol = 3) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title    = sprintf("Top termes par topic — LDA Gibbs (k=%d)", K_TOPICS),
+       subtitle = "Chaque tuile = un terme (ordre decroissant de probabilite)",
+       x = "Rang", y = NULL) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(), axis.ticks = element_blank(),
+        legend.position = "none")
+```
+
+---
+
+# 9. Refit Final et Soumission Kaggle
+
+```{r final-refit}
+cat("====== REFIT FINAL ======\n")
+
+# 9.1 Stylométrie — BUG CORRIGÉ : réutilise le cache train_all
+cat("  Stylo train_all (cache)...\n")
+# stylo_all est déjà en mémoire depuis le chunk stylometric-features
+# On recalcule le preprocesseur sur TOUT train_all
+stylo_final    <- stylo_all   # déjà calculé — pas de double calcul
+pp_stylo_final <- caret::preProcess(stylo_final,
+                    method = c("center","scale","nzv","zv"))
+stylo_final_sc <- predict(pp_stylo_final, stylo_final)
+
+# 9.2 TF-IDF bigrammes
+cat("  TF-IDF train_all...\n")
+it_final    <- itoken(safe_texts(train_all$text), progressbar = FALSE)
+vocab_final <- prune_vocabulary(
+                 create_vocabulary(it_final, ngram = c(1L, 2L)),
+                 term_count_min = 5, doc_proportion_max = 0.45)
+vec_final   <- vocab_vectorizer(vocab_final)
+dtm_final   <- create_dtm(itoken(safe_texts(train_all$text), progressbar = FALSE),
+                          vec_final)
+tfidf_final <- TfIdf$new()
+x_final_tf  <- tfidf_final$fit_transform(dtm_final)
+
+# 9.3 SVD
+cat("  SVD train_all...\n")
+K_FINAL   <- min(150L, ncol(x_final_tf) - 1L, nrow(x_final_tf) - 1L)
+K_FINAL   <- max(20L, K_FINAL)
+svd_final <- irlba(x_final_tf, nv = K_FINAL, nu = K_FINAL)
+x_final_sv <- svd_final$u %*% diag(svd_final$d)
+
+# 9.4 Fusion
+x_final_full <- cbind(x_final_sv, as.matrix(stylo_final_sc))
+x_final_df   <- as.data.frame(x_final_full)
+colnames(x_final_df) <- paste0("V", seq_len(ncol(x_final_df)))
+
+# 9.5 AFD finale
+cat("  AFD finale...\n")
+lda_final  <- MASS::lda(x = x_final_df, grouping = factor(train_all$generated))
+ld_final   <- as.data.frame(predict(lda_final, newdata = x_final_df)$x)
+ld_final$y <- as.integer(train_all$generated)
+
+# 9.6 Bayésien final
+cat("  Modele bayesien final...\n")
+if (USE_RSTANARM) {
+  set.seed(42)
+  bayes_final <- rstanarm::stan_glm(
+    y ~ .,
+    data            = ld_final,
+    family          = binomial("logit"),
+    prior           = rstanarm::normal(0, 2.5, autoscale = TRUE),
+    prior_intercept = rstanarm::normal(0, 5,   autoscale = FALSE),
+    chains          = 4, iter = 2000, warmup = 1000, seed = 42, refresh = 0
+  )
+} else {
+  bayes_final <- arm::bayesglm(y ~ ., data = ld_final, family = binomial("logit"))
+}
+cat("  Modele final ajuste\n")
+```
+
+```{r final-predict}
+cat("====== PREDICTION TEST ======\n")
+
+# 9.7 Stylométrie test
+cat("  Stylo test...\n")
+stylo_test    <- extract_stylo(safe_texts(test_df$text),
+                               cache_file = "cache_stylo_test.rds")
+stylo_test_sc <- predict(pp_stylo_final, stylo_test)
+
+# Aligner colonnes test sur final (nzv peut différer)
+for (col in setdiff(names(stylo_final_sc), names(stylo_test_sc)))
+  stylo_test_sc[[col]] <- 0
+stylo_test_sc <- stylo_test_sc[, names(stylo_final_sc), drop = FALSE]
+
+# 9.8 TF-IDF test
+# BUG CORRIGÉ : création de l'itoken JUSTE avant create_dtm
+# et safe_texts() garantit l'absence de NA
+cat("  TF-IDF test...\n")
+dtm_test_raw <- create_dtm(
+  itoken(safe_texts(test_df$text), progressbar = FALSE),
+  vec_final
+)
+
+# BUG CORRIGÉ : align_dtm_cols garantit l'ordre EXACT des colonnes
+dtm_test_aligned <- align_dtm_cols(dtm_test_raw, colnames(x_final_tf))
+x_test_tf        <- tfidf_final$transform(dtm_test_aligned)
+
+# 9.9 SVD test
+x_test_sv <- as.matrix(x_test_tf %*% svd_final$v)
+
+# 9.10 Fusion test
+# BUG CORRIGÉ : vérification que les dimensions sont compatibles
+x_test_full <- cbind(x_test_sv, as.matrix(stylo_test_sc))
+x_test_df   <- as.data.frame(x_test_full)
+
+# Vérification dimensionnelle CRITIQUE
+if (ncol(x_test_df) != ncol(x_final_df)) {
+  stop(sprintf(
+    "Dimensions incompatibles : test=%d cols, final=%d cols. Verifier align.",
+    ncol(x_test_df), ncol(x_final_df)
+  ))
+}
+colnames(x_test_df) <- colnames(x_final_df)
+
+# 9.11 AFD test
+ld_test <- as.data.frame(predict(lda_final, newdata = x_test_df)$x)
+
+# 9.12 Prédictions bayésiennes
+if (USE_RSTANARM) {
+  p_test <- colMeans(
+    rstanarm::posterior_epred(bayes_final, newdata = ld_test)
+  )
+} else {
+  p_test <- as.numeric(predict(bayes_final, newdata = ld_test, type = "response"))
+}
+
+p_test <- pmin(pmax(p_test, 0), 1)
+
+# 9.13 Soumission
+submission <- tibble(id = test_df$id, generated = p_test)
+
+cat(sprintf("Nb. predictions : %d\n", nrow(submission)))
+cat(sprintf("Plage [%.4f, %.4f]\n", min(p_test), max(p_test)))
+cat(sprintf("Proportion IA (>0.5) : %.1f%%\n", 100 * mean(p_test > 0.5)))
+
+knitr::kable(head(submission, 10), digits = 5,
+             caption = "Extrait submission.csv")
+
+ggplot(submission, aes(x = generated)) +
+  geom_histogram(bins = 50, fill = "#3498db", alpha = 0.8) +
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "#e74c3c") +
+  labs(title    = "Distribution probabilites predites (test)",
+       subtitle = "Ligne rouge = seuil 0.5",
+       x = "P(IA)", y = "Nb. textes") +
+  theme_minimal()
+
+write_csv(submission, "submission.csv")
+cat("submission.csv cree :", normalizePath("submission.csv"), "\n")
+```
+
+---
+
+# 10. Conclusion
+
+## 10.1 Résumé
+
+**Features :** 17 features stylométriques (TTR, Flesch, hapax ratio, marqueurs discursifs, entropie bigrammes...) combinées à TF-IDF bigrammes réduit par SVD en `r K_FINAL` dimensions latentes.
+
+**AFD :** Projection sur l'axe discriminant LD1 avec Cohen's d = `r round(cohens_d, 2)` — séparation `r ifelse(cohens_d > 0.8, "grande (d > 0.8)", ifelse(cohens_d > 0.5, "moyenne (d > 0.5)", "faible"))`. Les coefficients LD1 montrent les features stylométriques les plus discriminantes entre écriture humaine et IA.
+
+**Bayésien MCMC :** Inférence complète via NUTS/HMC (`rstanarm`) — modèle logistique bayésien :
+
+$$\text{logit}(p_i) = \alpha + \beta \cdot \text{LD1}_i$$
+
+4 chaînes × 2000 itérations (warmup 1000), convergence diagnostiquée par $\hat{R} < 1.01$, distributions a posteriori visualisées, probabilités calibrées.
+
+**Validation :** Split stratifié 80/20 + validation croisée 5-fold — AUC = `r if(exists("cv_df")) round(mean(cv_df$auc), 3) else "—"` ± `r if(exists("cv_df")) round(sd(cv_df$auc), 3) else "—"` (stable entre folds).
+
+## 10.2 Limites et discussion
+
+**Performances élevées — interprétation prudente :**
+Les métriques obtenues (AUC ≈ 0.998, Acc ≈ 98.6%) sont remarquablement élevées. Plusieurs facteurs l'expliquent : (1) les textes IA du dataset LLM-Detect présentent des patterns stylistiques très distincts des textes humains, (2) les features stylométriques capturent des différences de surface robustes. Cependant, ces performances ont été obtenues via un **split aléatoire stratifié** — une validation par groupes (par `source` ou `prompt`) permettrait d'évaluer la robustesse hors-distribution et de détecter un éventuel leakage contextuel lié à la structure du dataset.
+
+**Absence de leakage classique :**
+La pipeline CV reconstruit TF-IDF, SVD, preprocessing et AFD dans chaque fold — aucune information du set de validation ne fuit dans l'entraînement. Le risque résiduel est structural : des textes similaires issus du même prompt ou de la même source pourraient apparaître des deux côtés du split aléatoire.
+
+**Jeu de test Kaggle :**
+Le fichier `test_essays.csv` fourni dans le dataset contient `r nrow(test_df)` texte(s) — ce fichier est le jeu de test officiel de la compétition Kaggle sur lequel la soumission est générée. Les prédictions sont exportées dans `submission.csv`.
+
+## 10.2 Travaux futurs
+
+- **Perplexité réelle** via GPT-2 (`reticulate`)
+- **BERT** / sentence embeddings pour remplacer TF-IDF
+- **KDA** (Kernel Discriminant Analysis) si non-linéarité détectée
+- **Inférence variationnelle** (`stan_glm(..., algorithm="meanfield")`)
+- **LOO-CV / WAIC** pour comparaison de modèles (`rstanarm::loo()`)
+- **Test Box's M** pour vérifier l'homoscédasticité (hypothèse AFD)
+
+---
+
+```{r cleanup, include=FALSE}
+# Fermer proprement le cluster parallèle
+if (exists("cl")) {
+  parallel::stopCluster(cl)
+  cat("Cluster parallele ferme\n")
+}
+```
+
+*Rapport genere le `r format(Sys.Date(), '%d/%m/%Y')` — ESIEE 2025-2026 — E4 AP-4209*

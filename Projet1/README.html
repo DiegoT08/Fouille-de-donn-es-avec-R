@@ -1,0 +1,140 @@
+<h1 id="projet-1-classification-bayésienne-des-émotions">Projet 1 –
+Classification Bayésienne des Émotions</h1>
+<h2 id="esiee-paris-2025-2026-ap-4209">ESIEE Paris – 2025-2026 –
+AP-4209</h2>
+<p><strong>Auteur : Pascal Torres</strong></p>
+<hr />
+<h2 id="objectif-du-projet">Objectif du projet</h2>
+<p>Ce projet a pour objectif de développer un <strong>classifieur
+bayésien naïf (Naive Bayes)</strong> capable de prédire une émotion à
+partir d’un texte.</p>
+<p>Le travail s’appuie sur un <strong>jeu de données Kaggle portant sur
+les émotions</strong>, et suit une démarche complète :</p>
+<ul>
+<li>Analyse exploratoire des données (EDA)</li>
+<li>Prétraitement du texte</li>
+<li>Vectorisation TF-IDF</li>
+<li>Entraînement d’un modèle Naive Bayes</li>
+<li>Évaluation des performances</li>
+<li>Validation croisée</li>
+</ul>
+<hr />
+<h2 id="dataset">Dataset</h2>
+<p><strong>Source :</strong> Emotion Dataset – Kaggle</p>
+<p>Le dataset contient :</p>
+<ul>
+<li><code>Text</code> : texte exprimant une émotion<br />
+</li>
+<li><code>Emotion</code> : étiquette cible (classe)</li>
+</ul>
+<p>Exemples d’émotions : - joy<br />
+- sadness<br />
+- anger<br />
+- fear<br />
+- love<br />
+- surprise</p>
+<hr />
+<h2 id="méthodologie">Méthodologie</h2>
+<h3 id="analyse-exploratoire-eda">1️ Analyse exploratoire (EDA)</h3>
+<ul>
+<li>Distribution des classes<br />
+</li>
+<li>Analyse du déséquilibre éventuel<br />
+</li>
+<li>Longueur moyenne des textes<br />
+</li>
+<li>Visualisations graphiques</li>
+</ul>
+<hr />
+<h3 id="prétraitement-du-texte">2️ Prétraitement du texte</h3>
+<p>Les étapes appliquées :</p>
+<ul>
+<li>Passage en minuscules<br />
+</li>
+<li>Suppression des caractères spéciaux et chiffres<br />
+</li>
+<li>Suppression des stopwords<br />
+</li>
+<li>Tokenisation<br />
+</li>
+<li>Stemming<br />
+</li>
+<li>Construction d’un corpus (<code>tm</code>)<br />
+</li>
+<li>Vectorisation TF-IDF</li>
+</ul>
+<hr />
+<h3 id="entraînement-du-modèle">3️ Entraînement du modèle</h3>
+<ul>
+<li>Division des données :
+<ul>
+<li>70% entraînement<br />
+</li>
+<li>30% test<br />
+</li>
+</ul></li>
+<li>Modèle : <code>naiveBayes()</code> du package
+<code>e1071</code><br />
+</li>
+<li>Lissage de Laplace appliqué</li>
+</ul>
+<hr />
+<h3 id="évaluation">4️ Évaluation</h3>
+<p>Les métriques calculées :</p>
+<ul>
+<li>Accuracy<br />
+</li>
+<li>Precision<br />
+</li>
+<li>Recall<br />
+</li>
+<li>F1-score<br />
+</li>
+<li>Matrice de confusion<br />
+</li>
+<li>Validation croisée k-fold</li>
+</ul>
+<hr />
+<h2 id="structure-du-dossier">Structure du dossier</h2>
+<pre><code>Projet1/
+│
+├── data/
+│   └── emotion_dataset.csv
+│
+├── projet1.Rmd
+├── Projet1.html
+├── project1.pdf
+└── README.md</code></pre>
+<hr />
+<h2 id="packages-utilisés">Packages utilisés</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a>readr</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a>dplyr</span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>stringr</span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a>ggplot2</span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a>tm</span>
+<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a>SnowballC</span>
+<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a>e1071</span>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a>caret</span>
+<span id="cb2-9"><a href="#cb2-9" tabindex="-1"></a>pROC</span></code></pre></div>
+<hr />
+<h2 id="compétences-mobilisées">Compétences mobilisées</h2>
+<ul>
+<li>NLP (Natural Language Processing)<br />
+</li>
+<li>TF-IDF<br />
+</li>
+<li>Naive Bayes<br />
+</li>
+<li>Évaluation de modèles<br />
+</li>
+<li>Validation croisée<br />
+</li>
+<li>Interprétation statistique</li>
+</ul>
+<hr />
+<h2 id="conclusion">Conclusion</h2>
+<p>Ce projet démontre l’efficacité d’un classifieur bayésien naïf pour
+la classification de texte court.</p>
+<p>Malgré l’hypothèse d’indépendance conditionnelle forte, le modèle
+offre de bonnes performances et constitue une base solide pour des
+approches plus avancées (SVM, réseaux neuronaux, transformers).</p>

@@ -1,0 +1,780 @@
+<h1
+id="projet-3-classification-bayésienne-analyse-factorielle-discriminante">Projet
+3 : Classification Bayésienne &amp; Analyse Factorielle
+Discriminante</h1>
+<h3
+id="thèses-de-doctorat-françaises-catégorisation-par-domaine-détude">Thèses
+de doctorat françaises — Catégorisation par domaine d’étude</h3>
+<p><strong>ESIEE Paris – 2025-2026 – E4 AP-4209</strong><br />
+<strong>Auteurs :</strong> TORRES Diego, WU Lucas<br />
+<strong>Encadrant :</strong> Badr TAJINI</p>
+<hr />
+<h2 id="table-des-matières">Table des matières</h2>
+<ol style="list-style-type: decimal">
+<li><a href="#id_-vue-densemble">Vue d’ensemble</a></li>
+<li><a href="#id_-dataset">Dataset</a></li>
+<li><a href="#id_-pipeline-compl%C3%A8te">Pipeline complète</a></li>
+<li><a href="#id_-structure-du-projet">Structure du projet</a></li>
+<li><a href="#id_-installation-et-d%C3%A9pendances">Installation et
+dépendances</a></li>
+<li><a href="#id_-utilisation">Utilisation</a></li>
+<li><a href="#id_-r%C3%A9sultats">Résultats</a></li>
+<li><a href="#id_-m%C3%A9thodes-et-fondements-th%C3%A9oriques">Méthodes
+et fondements théoriques</a></li>
+<li><a href="#id_-limites-et-travaux-futurs">Limites et travaux
+futurs</a></li>
+<li><a href="#id_-r%C3%A9f%C3%A9rences">Références</a></li>
+</ol>
+<hr />
+<h2 id="vue-densemble">Vue d’ensemble</h2>
+<p>Ce projet met en place une <strong>classification automatique de
+thèses de doctorat françaises</strong> en domaines d’étude, à partir de
+leurs résumés textuels. Il s’agit d’un problème
+<strong>multi-classes</strong> (10 domaines) sur données textuelles,
+présentant les défis caractéristiques de ce type de données : haute
+dimensionnalité, fort déséquilibre des classes et nature sémantique des
+features.</p>
+<p><strong>Pipeline en cinq étapes :</strong></p>
+<pre><code>Résumés textuels (519 578 thèses brutes)
+    ↓
+Nettoyage + Stopwords + Stemming
+    ↓
+Vectorisation TF-IDF  →  15 000 docs × 1 711 termes
+    +
+Modélisation thématique LDA  →  10 topics (matrice γ)
+    ↓
+AFD (Analyse Factorielle Discriminante)  →  9 axes discriminants
+    ↓
+Classifieur Naive Bayes (lissage Laplace)
+    ↓
+Évaluation : Accuracy 76,71 % | F1 0,768 | AUC-ROC 0,972</code></pre>
+<hr />
+<h2 id="dataset">Dataset</h2>
+<p><strong>Source :</strong> <a
+href="https://www.kaggle.com/code/antoinebourgois2/french-doctoral-thesissemantic-similarity-search">French
+Doctoral Thesis Semantic Similarity Search — Kaggle</a></p>
+<p><strong>Fichier :</strong>
+<code>french_thesis_20231021_metadata.csv</code></p>
+<h3 id="structure-du-dataset-brut">Structure du dataset brut</h3>
+<table>
+<thead>
+<tr>
+<th>Colonne</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>URL</code></td>
+<td>Lien vers la thèse</td>
+</tr>
+<tr>
+<td><code>Title</code></td>
+<td>Titre de la thèse</td>
+</tr>
+<tr>
+<td><code>Author</code></td>
+<td>Auteur</td>
+</tr>
+<tr>
+<td><code>Description</code></td>
+<td>Résumé textuel (variable d’entrée principale)</td>
+</tr>
+<tr>
+<td><code>Domain</code></td>
+<td>Domaine d’étude <strong>(variable cible)</strong></td>
+</tr>
+<tr>
+<td><code>Direction</code></td>
+<td>Directeur de thèse</td>
+</tr>
+<tr>
+<td><code>Statuts</code></td>
+<td>Statut de la thèse</td>
+</tr>
+<tr>
+<td><code>Date</code></td>
+<td>Date de soutenance</td>
+</tr>
+</tbody>
+</table>
+<h3 id="caractéristiques-clés">Caractéristiques clés</h3>
+<table>
+<thead>
+<tr>
+<th>Indicateur</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Nombre total de thèses</td>
+<td>519 578</td>
+</tr>
+<tr>
+<td>Domaines distincts</td>
+<td>27 248</td>
+</tr>
+<tr>
+<td>Valeurs manquantes dans <code>Description</code></td>
+<td>20,21 %</td>
+</tr>
+<tr>
+<td>Ratio déséquilibre max/min</td>
+<td>&gt; 22 000</td>
+</tr>
+<tr>
+<td>Longueur médiane des résumés</td>
+<td>240 mots</td>
+</tr>
+</tbody>
+</table>
+<h3 id="top-10-domaines-sélectionnés-après-exploration">Top 10 domaines
+sélectionnés (après exploration)</h3>
+<table>
+<colgroup>
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Rang</th>
+<th>Domaine</th>
+<th>Effectif brut</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Physique</td>
+<td>16 234</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Informatique</td>
+<td>15 990</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Chimie</td>
+<td>10 519</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Sciences économiques</td>
+<td>9 375</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Sciences appliquées</td>
+<td>8 705</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Sciences biologiques et fondamentales appliquées. Psychologie</td>
+<td>8 044</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Histoire</td>
+<td>7 449</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Sciences de gestion</td>
+<td>6 635</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Sociologie</td>
+<td>6 105</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Droit public</td>
+<td>5 999</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Sous-échantillonnage :</strong> 1 500 thèses par domaine →
+<strong>15 000 documents</strong> au total pour l’analyse.</p>
+</blockquote>
+<h3 id="placement-du-fichier">Placement du fichier</h3>
+<pre><code>projet3/
+└── data/
+    └── french_thesis_20231021_metadata.csv</code></pre>
+<hr />
+<h2 id="pipeline-complète">Pipeline complète</h2>
+<h3 id="étape-1-nettoyage-du-texte">Étape 1 — Nettoyage du texte</h3>
+<ul>
+<li>Conversion en minuscules</li>
+<li>Remplacement des caractères accentués (ASCII)</li>
+<li>Suppression de la ponctuation et des chiffres</li>
+<li>Suppression des stopwords français + anglais (termes non
+discriminants dans les thèses)</li>
+<li>Stemming en français (<code>SnowballC</code>)</li>
+</ul>
+<h3 id="étape-2-vectorisation-tf-idf">Étape 2 — Vectorisation
+TF-IDF</h3>
+<pre><code>Corpus : 15 000 documents
+DTM TF-IDF : 15 000 × 1 711 termes
+(termes présents dans au moins 5 documents, longueur ≥ 3 caractères, sparsité ≤ 99 %)</code></pre>
+<h3
+id="étape-3-modélisation-thématique-lda-latent-dirichlet-allocation">Étape
+3 — Modélisation thématique LDA (Latent Dirichlet Allocation)</h3>
+<ul>
+<li>K = 10 topics (correspondant au nombre de domaines)</li>
+<li>Algorithme Gibbs Sampling (burnin = 500, iter = 1000)</li>
+<li>Extraction de la matrice γ (distribution des topics par
+document)</li>
+<li>Combinaison : features TF-IDF + matrice γ → <strong>15 000 × 1 721
+features</strong></li>
+</ul>
+<p><strong>Top 10 mots par topic (résultats obtenus) :</strong></p>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Mots clés représentatifs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T1</td>
+<td>etat, droit, public, intern, juridiqu, publiqu, princip, pouvoir,
+politiqu, administr</td>
+</tr>
+<tr>
+<td>T2</td>
+<td>processus, entrepris, organis, gestion, acteur, pratiqu, qualit,
+projet, relat, action</td>
+</tr>
+<tr>
+<td>T3</td>
+<td>activit, deux, ete, cellul, montr, protein, chez, specifiqu, gene,
+effet</td>
+</tr>
+<tr>
+<td>T4</td>
+<td>plus, etr, comm, peut, autr, grand, tout, certain, fait, meme</td>
+</tr>
+<tr>
+<td>T5</td>
+<td>economiqu, developp, march, pay, effet, entr, product, impact,
+economi, term</td>
+</tr>
+<tr>
+<td>T6</td>
+<td>system, problem, donne, utilis, base, applic, algorithm, proposon,
+inform, reseaux</td>
+</tr>
+<tr>
+<td>T7</td>
+<td>mesur, phase, temperatur, champ, effet, surfac, energi, propriet,
+optiqu, etudi</td>
+</tr>
+<tr>
+<td>T8</td>
+<td>social, entr, politiqu, societ, siecl, franc, anne, vie, espac,
+rapport</td>
+</tr>
+<tr>
+<td>T9</td>
+<td>ete, complex, compos, synthes, utilis, permi, reaction, format,
+structur, propriet</td>
+</tr>
+<tr>
+<td>T10</td>
+<td>model, deux, present, premier, differ, structur, imag, different,
+point, ensuit</td>
+</tr>
+</tbody>
+</table>
+<h3 id="étape-4-afd-analyse-factorielle-discriminante">Étape 4 — AFD
+(Analyse Factorielle Discriminante)</h3>
+<ul>
+<li>Implémentée via <code>MASS::lda()</code> (cas linéaire)</li>
+<li>Prior uniforme sur les 10 classes</li>
+<li>Tolérance numérique : <code>tol = 1e-4</code></li>
+<li><strong>9 axes discriminants</strong> produits (K_classes − 1)</li>
+</ul>
+<h3 id="étape-5-classification-naive-bayes">Étape 5 — Classification
+Naive Bayes</h3>
+<p><span class="math display">$$P(D_k \mid \mathbf{x}) \propto P(D_k)
+\prod_{i=1}^{p} P(x_i \mid D_k)$$</span></p>
+<ul>
+<li>Lissage de Laplace (λ = 1) pour éviter les probabilités nulles</li>
+<li>Implémenté via <code>e1071::naiveBayes()</code></li>
+<li>Entraînement : 10 500 documents | Test : 4 500 documents (split
+70/30 stratifié)</li>
+</ul>
+<hr />
+<h2 id="structure-du-projet">Structure du projet</h2>
+<pre><code>projet3/
+│
+├── data/
+│   └── french_thesis_20231021_metadata.csv     # Dataset brut (à télécharger)
+│
+├── projet3.Rmd                                  # Document principal (code + rapport)
+├── projet3.html                                 # Rapport compilé
+│
+└── README.md                                    # Ce fichier</code></pre>
+<hr />
+<h2 id="installation-et-dépendances">Installation et dépendances</h2>
+<h3 id="prérequis">Prérequis</h3>
+<ul>
+<li><strong>R</strong> ≥ 4.3.0</li>
+<li><strong>RStudio</strong> (recommandé) ou tout éditeur compatible
+RMarkdown</li>
+<li>Mémoire RAM recommandée : <strong>≥ 8 Go</strong> (dataset de 519
+578 lignes chargé en mémoire)</li>
+</ul>
+<h3 id="installation-des-packages">Installation des packages</h3>
+<p>Les packages manquants sont <strong>installés
+automatiquement</strong> au lancement du Rmd. Pour une installation
+manuelle préalable, coller dans la console R :</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="fu">install.packages</span>(<span class="fu">c</span>(</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>  <span class="co"># Manipulation de données</span></span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>  <span class="st">&quot;readr&quot;</span>, <span class="st">&quot;dplyr&quot;</span>, <span class="st">&quot;stringr&quot;</span>, <span class="st">&quot;tidyr&quot;</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>  <span class="co"># Visualisation</span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a>  <span class="st">&quot;ggplot2&quot;</span>, <span class="st">&quot;scales&quot;</span>, <span class="st">&quot;RColorBrewer&quot;</span>,</span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a></span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a>  <span class="co"># NLP / Text mining</span></span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a>  <span class="st">&quot;tm&quot;</span>, <span class="st">&quot;SnowballC&quot;</span>, <span class="st">&quot;tidytext&quot;</span>, <span class="st">&quot;topicmodels&quot;</span>,</span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a></span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a>  <span class="co"># Modélisation</span></span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a>  <span class="st">&quot;e1071&quot;</span>,       <span class="co"># Naive Bayes</span></span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a>  <span class="st">&quot;MASS&quot;</span>,        <span class="co"># LDA discriminant</span></span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a>  <span class="st">&quot;caret&quot;</span>,       <span class="co"># Matrice de confusion, validation croisée</span></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a>  <span class="st">&quot;pROC&quot;</span>,        <span class="co"># Courbes ROC / AUC</span></span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a></span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a>  <span class="co"># Optionnel (clustering)</span></span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a>  <span class="st">&quot;naivebayes&quot;</span></span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a>))</span></code></pre></div>
+<blockquote>
+<p><strong>Note :</strong> <code>MASS</code> est inclus dans R de base
+et n’a généralement pas besoin d’être installé séparément.</p>
+</blockquote>
+<hr />
+<h2 id="utilisation">Utilisation</h2>
+<h3 id="lancement-du-rapport">Lancement du rapport</h3>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>rmarkdown<span class="sc">::</span><span class="fu">render</span>(<span class="st">&quot;projet3.Rmd&quot;</span>)</span></code></pre></div>
+<p>Ou depuis le terminal Windows :</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode powershell"><code class="sourceCode powershell"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="op">&amp;</span> <span class="st">&quot;C:\Program Files\R\R-4.5.2\bin\Rscript.exe&quot;</span> <span class="op">-</span>e <span class="st">&quot;rmarkdown::render(&#39;projet3.Rmd&#39;)&quot;</span></span></code></pre></div>
+<h3 id="paramètres-clés-modifiables">Paramètres clés modifiables</h3>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>TOP_N_DOMAINS  <span class="ot">&lt;-</span> <span class="dv">10</span>     <span class="co"># Nombre de domaines sélectionnés parmi les plus représentés</span></span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>MAX_PER_DOMAIN <span class="ot">&lt;-</span> <span class="dv">1500</span>   <span class="co"># Nombre max de thèses par domaine (sous-échantillonnage)</span></span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>K              <span class="ot">&lt;-</span> <span class="dv">10</span>     <span class="co"># Nombre de topics LDA thématique</span></span></code></pre></div>
+<blockquote>
+<p><strong>Ajustement mémoire :</strong> Si la RAM est limitée, réduire
+<code>MAX_PER_DOMAIN</code> à 500 ou 800.</p>
+</blockquote>
+<h3 id="note-sur-la-compatibilité-caret">Note sur la compatibilité
+caret</h3>
+<p>Les noms de classes sont automatiquement nettoyés via
+<code>make.names()</code> (suppression des accents et caractères
+spéciaux) pour satisfaire les contraintes de <code>caret</code>. Une
+table de correspondance <code>label_map</code> permet de restaurer les
+noms originaux dans toutes les visualisations.</p>
+<hr />
+<h2 id="résultats">Résultats</h2>
+<h3 id="métriques-globales-ensemble-de-test-4-500-documents">Métriques
+globales (ensemble de test — 4 500 documents)</h3>
+<table>
+<thead>
+<tr>
+<th>Métrique</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Accuracy</strong></td>
+<td><strong>76,71 %</strong></td>
+</tr>
+<tr>
+<td><strong>F1-Score moyen (macro)</strong></td>
+<td><strong>0,7680</strong></td>
+</tr>
+<tr>
+<td><strong>AUC-ROC moyen (One-vs-Rest)</strong></td>
+<td><strong>0,9724</strong></td>
+</tr>
+<tr>
+<td>Kappa de Cohen</td>
+<td>0,7412</td>
+</tr>
+</tbody>
+</table>
+<h3 id="validation-croisée-5-fold">Validation croisée 5-fold</h3>
+<table>
+<thead>
+<tr>
+<th>Métrique</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Accuracy CV moyenne</td>
+<td><strong>87,59 % ± 0,78 %</strong></td>
+</tr>
+<tr>
+<td>Kappa CV moyen</td>
+<td>0,8621</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>L’écart entre l’accuracy sur l’ensemble de test (76,71 %) et la
+validation croisée (87,59 %) s’explique par la différence de taille des
+sous-corpus utilisés. La CV porte sur un sous-ensemble de 6 000
+documents pour des raisons de temps de calcul.</p>
+</blockquote>
+<h3 id="métriques-par-domaine-f1-score-classement-décroissant">Métriques
+par domaine (F1-Score, classement décroissant)</h3>
+<table>
+<colgroup>
+<col width="20%" />
+<col width="20%" />
+<col width="20%" />
+<col width="20%" />
+<col width="20%" />
+</colgroup>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Precision</th>
+<th>Rappel</th>
+<th>F1-Score</th>
+<th>Spécificité</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Droit public</td>
+<td>0,9218</td>
+<td>0,8911</td>
+<td><strong>0,9062</strong></td>
+<td>0,9916</td>
+</tr>
+<tr>
+<td>Sc. biologiques &amp; Psychologie</td>
+<td>0,8929</td>
+<td>0,8156</td>
+<td><strong>0,8525</strong></td>
+<td>0,9891</td>
+</tr>
+<tr>
+<td>Histoire</td>
+<td>0,8355</td>
+<td>0,8578</td>
+<td><strong>0,8465</strong></td>
+<td>0,9812</td>
+</tr>
+<tr>
+<td>Informatique</td>
+<td>0,8000</td>
+<td>0,7911</td>
+<td><strong>0,7955</strong></td>
+<td>0,9780</td>
+</tr>
+<tr>
+<td>Sociologie</td>
+<td>0,7946</td>
+<td>0,7911</td>
+<td><strong>0,7929</strong></td>
+<td>0,9773</td>
+</tr>
+<tr>
+<td>Sciences de gestion</td>
+<td>0,7770</td>
+<td>0,7356</td>
+<td><strong>0,7557</strong></td>
+<td>0,9765</td>
+</tr>
+<tr>
+<td>Chimie</td>
+<td>0,7358</td>
+<td>0,7489</td>
+<td><strong>0,7423</strong></td>
+<td>0,9701</td>
+</tr>
+<tr>
+<td>Sciences économiques</td>
+<td>0,7164</td>
+<td>0,7578</td>
+<td><strong>0,7365</strong></td>
+<td>0,9667</td>
+</tr>
+<tr>
+<td>Physique</td>
+<td>0,7004</td>
+<td>0,7533</td>
+<td><strong>0,7259</strong></td>
+<td>0,9642</td>
+</tr>
+<tr>
+<td>Sciences appliquées</td>
+<td>0,5231</td>
+<td>0,5289</td>
+<td><strong>0,5260</strong></td>
+<td>0,9464</td>
+</tr>
+</tbody>
+</table>
+<h3 id="auc-roc-par-domaine-one-vs-rest">AUC-ROC par domaine
+(One-vs-Rest)</h3>
+<table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>AUC</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Droit public</td>
+<td>0,9936</td>
+</tr>
+<tr>
+<td>Histoire</td>
+<td>0,9867</td>
+</tr>
+<tr>
+<td>Informatique</td>
+<td>0,9815</td>
+</tr>
+<tr>
+<td>Sc. biologiques &amp; Psychologie</td>
+<td>0,9795</td>
+</tr>
+<tr>
+<td>Sociologie</td>
+<td>0,9774</td>
+</tr>
+<tr>
+<td>Sciences de gestion</td>
+<td>0,9728</td>
+</tr>
+<tr>
+<td>Chimie</td>
+<td>0,9717</td>
+</tr>
+<tr>
+<td>Physique</td>
+<td>0,9705</td>
+</tr>
+<tr>
+<td>Sciences économiques</td>
+<td>0,9704</td>
+</tr>
+<tr>
+<td>Sciences appliquées</td>
+<td>0,9203</td>
+</tr>
+<tr>
+<td><strong>Moyenne macro</strong></td>
+<td><strong>0,9724</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="synthèse-finale">Synthèse finale</h3>
+<pre><code>╔════════════════════════════════════════════════════════╗
+║         SYNTHESE DES RESULTATS — PROJET 3             ║
+╠════════════════════════════════════════════════════════╣
+║  Documents traités        : 15 000                    ║
+║  Domaines (classes)       : 10                        ║
+║  Features TF-IDF          : 1 711 termes              ║
+║  Topics LDA               : 10                        ║
+║  Axes discriminants (AFD) : 9                         ║
+╠════════════════════════════════════════════════════════╣
+║  Accuracy (test)          : 76,71 %                   ║
+║  F1-Score moyen (macro)   : 0,7680                    ║
+║  AUC moyen (One-vs-Rest)  : 0,9724                    ║
+║  Kappa de Cohen           : 0,7412                    ║
+╚════════════════════════════════════════════════════════╝</code></pre>
+<hr />
+<h2 id="méthodes-et-fondements-théoriques">Méthodes et fondements
+théoriques</h2>
+<h3 id="latent-dirichlet-allocation-lda-thématique">Latent Dirichlet
+Allocation (LDA thématique)</h3>
+<p>Modèle génératif probabiliste qui suppose que chaque document est un
+mélange de K topics, et chaque topic une distribution sur le
+vocabulaire. Utilisé ici pour enrichir la représentation des documents
+avec des features sémantiques latentes (matrice γ).</p>
+<h3 id="analyse-factorielle-discriminante-afd-lda-discriminant">Analyse
+Factorielle Discriminante (AFD / LDA discriminant)</h3>
+<p>L’AFD cherche la projection <strong>w</strong> maximisant le critère
+de Fisher :</p>
+<p><span class="math display">$$J(\mathbf{w}) = \frac{\mathbf{w}^\top
+S_B \,\mathbf{w}}{\mathbf{w}^\top S_W \,\mathbf{w}}$$</span></p>
+<p>avec <span class="math inline"><em>S</em><sub><em>B</em></sub></span>
+= dispersion inter-classes, <span
+class="math inline"><em>S</em><sub><em>W</em></sub></span> = dispersion
+intra-classes. La solution est le problème aux valeurs propres
+généralisé <span
+class="math inline"><em>S</em><sub><em>W</em></sub><sup>−1</sup><em>S</em><sub><em>B</em></sub> <strong>w</strong> = <em>λ</em> <strong>w</strong></span>.</p>
+<p>Pour K = 10 classes, l’AFD produit au maximum <strong>K − 1 = 9 axes
+discriminants</strong>.</p>
+<h3 id="naive-bayes">Naive Bayes</h3>
+<p>Sous l’hypothèse d’indépendance conditionnelle des features :</p>
+<p><span class="math display">$$P(D_k \mid \mathbf{x}) \propto P(D_k)
+\prod_{i=1}^{p} P(x_i \mid D_k)$$</span></p>
+<p>Le <strong>lissage de Laplace</strong> (λ = 1) est appliqué pour
+éviter les probabilités nulles sur des termes absents de l’ensemble
+d’entraînement.</p>
+<h3 id="gestion-du-déséquilibre-des-classes">Gestion du déséquilibre des
+classes</h3>
+<p>Le dataset original présente un ratio max/min &gt; 22 000. Stratégie
+retenue :</p>
+<ul>
+<li><strong>Sous-échantillonnage</strong> à 1 500 thèses par domaine
+(équilibre parfait)</li>
+<li><strong>Comparaison de priors</strong> : prior uniforme vs prior
+reflétant la distribution réelle (résultats identiques dans ce cas, car
+les données sont parfaitement équilibrées après
+sous-échantillonnage)</li>
+</ul>
+<hr />
+<h2 id="limites-et-travaux-futurs">Limites et travaux futurs</h2>
+<h3 id="limites-identifiées">Limites identifiées</h3>
+<ul>
+<li><strong>27 248 domaines originaux</strong> : la réduction à 10
+domaines est nécessaire mais exclut la grande majorité du dataset. Une
+approche hiérarchique permettrait de conserver plus d’information.</li>
+<li><strong>Sciences appliquées</strong> : F1 = 0,526, le domaine le
+moins bien classifié — fort chevauchement sémantique avec Physique et
+Informatique.</li>
+<li><strong>Stemming agressif</strong> : peut dégrader la précision
+sémantique (ex. “informatique” et “information” ramenés à la même
+racine).</li>
+</ul>
+<h3 id="pistes-damélioration">Pistes d’amélioration</h3>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Piste</th>
+<th>Bénéfice attendu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Word embeddings (Word2Vec, FastText)</td>
+<td>Représentation sémantique plus riche que TF-IDF</td>
+</tr>
+<tr>
+<td>CamemBERT / FlauBERT</td>
+<td>Embeddings contextuels pré-entraînés en français</td>
+</tr>
+<tr>
+<td>Kernel Discriminant Analysis (KDA)</td>
+<td>Capturer des non-linéarités dans l’espace des features</td>
+</tr>
+<tr>
+<td>SMOTE</td>
+<td>Génération d’exemples synthétiques pour les classes
+sous-représentées</td>
+</tr>
+<tr>
+<td>Classification hiérarchique</td>
+<td>Grandes familles → sous-domaines (ex. Sciences → Physique /
+Chimie)</td>
+</tr>
+<tr>
+<td>Grid Search / Optimisation bayésienne</td>
+<td>Optimisation systématique des hyperparamètres</td>
+</tr>
+<tr>
+<td>Lemmatisation (spaCy fr)</td>
+<td>Plus précise que le stemming de Snowball</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="références">Références</h2>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Référence</th>
+<th>Citation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Dataset</strong></td>
+<td><a
+href="https://www.kaggle.com/code/antoinebourgois2/french-doctoral-thesissemantic-similarity-search">French
+Doctoral Thesis Semantic Similarity — Kaggle</a></td>
+</tr>
+<tr>
+<td><strong>LDA thématique</strong></td>
+<td>Blei, D.M., Ng, A.Y., Jordan, M.I. (2003). <em>Latent Dirichlet
+Allocation</em>. JMLR, 3, 993-1022</td>
+</tr>
+<tr>
+<td><strong>Naive Bayes texte</strong></td>
+<td>Manning, C.D., Raghavan, P., Schütze, H. (2008). <em>Introduction to
+Information Retrieval</em>. Cambridge University Press</td>
+</tr>
+<tr>
+<td><strong>AFD / LDA discriminant</strong></td>
+<td>Fisher, R.A. (1936). <em>The use of multiple measurements in
+taxonomic problems</em>. Annals of Eugenics, 7(2), 179-188</td>
+</tr>
+<tr>
+<td><strong>Package topicmodels</strong></td>
+<td>Grün, B., Hornik, K. (2011). <em>topicmodels: An R Package for
+Fitting Topic Models</em>. JSS, 40(13)</td>
+</tr>
+<tr>
+<td><strong>Package e1071</strong></td>
+<td>Meyer, D. et al. (2023). <em>e1071: Misc Functions of the Department
+of Statistics</em>. CRAN</td>
+</tr>
+<tr>
+<td><strong>Package tm</strong></td>
+<td>Feinerer, I., Hornik, K. (2023). <em>tm: Text Mining Package</em>.
+CRAN</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="auteurs">Auteurs</h2>
+<table>
+<thead>
+<tr>
+<th>Nom</th>
+<th>Établissement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TORRES Diego</td>
+<td>ESIEE Paris</td>
+</tr>
+<tr>
+<td>WU Lucas</td>
+<td>ESIEE Paris</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Encadrant :</strong> Badr TAJINI — ESIEE Paris<br />
+<strong>Cours :</strong> AP-4209 — E4 — 2025-2026<br />
+<strong>Date de rendu :</strong> 19/02/2026</p>

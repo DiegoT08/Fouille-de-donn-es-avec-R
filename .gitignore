@@ -1,0 +1,9 @@
+@"
+Projet/datasets.zip
+Projet/datasets/
+Projet/data/train_drcat_*.csv
+Projet3/data/french_thesis_20231021_metadata.csv
+__MACOSX/
+*.rds
+.Rhistory
+"@ | Out-File -Encoding utf8 .gitignore

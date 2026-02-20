@@ -1,0 +1,549 @@
+---
+title: "<FONT color='#0066CC'><FONT size = 4 ><DIV align= center> AP-4209 ESIEE-Paris: 2024 - 2025 </DIV></FONT></FONT>"
+output:
+  html_document:
+    highlight: textmate
+    theme: readable
+    toc: yes
+    toc_depth: 6
+    toc_float: yes
+---
+
+
+<style type="text/css">
+body, td {font-size: 15px;}
+code.r{font-size: 5px;}
+pre { font-size: 12px;}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r functions, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+
+# ------------------------------------------------------------
+# MANOVA (comme TD2) : calcule SS_tot, SS_Intra, SS_Inter + Lambda + p-value
+# ------------------------------------------------------------
+MANOVA <- function(df, group_col) {
+  # Groupe
+  Y <- as.factor(df[[group_col]])
+
+  # Variables numériques (prédictives)
+  num_cols <- which(sapply(df, is.numeric))
+  X <- df[, num_cols, drop = FALSE]
+
+  N <- nrow(X)
+  P <- ncol(X)
+  K <- length(levels(Y))
+
+  XK <- split(X, Y)
+  NK <- sapply(XK, nrow)
+  GK <- lapply(XK, colMeans)
+  G  <- colMeans(X)
+
+  X_mat <- as.matrix(X)
+  G_mat <- matrix(G, nrow = N, ncol = P, byrow = TRUE)
+  SS_tot <- t(X_mat - G_mat) %*% (X_mat - G_mat)
+
+  SS_partiel_Intra <- lapply(names(XK), function(gr) {
+    Xk_mat <- as.matrix(XK[[gr]])
+    Gk <- GK[[gr]]
+    Gk_mat <- matrix(Gk, nrow = nrow(Xk_mat), ncol = P, byrow = TRUE)
+    t(Xk_mat - Gk_mat) %*% (Xk_mat - Gk_mat)
+  })
+  names(SS_partiel_Intra) <- names(XK)
+
+  SS_Intra <- Reduce("+", SS_partiel_Intra)
+  SS_Inter <- SS_tot - SS_Intra
+
+  Lambda <- det(SS_Intra) / det(SS_tot)
+  chi2_corr <- - (N - 1 - (P + K)/2) * log(Lambda)
+  ddl <- P * (K - 1)
+  p_value <- 1 - pchisq(chi2_corr, df = ddl)
+
+  out <- list(
+    SS_tot = SS_tot,
+    SS_Intra = SS_Intra,
+    SS_Inter = SS_Inter,
+    GK = GK,
+    G = G,
+    NK = NK,
+    P = P,
+    N = N,
+    K = K,
+    Lambda = Lambda,
+    p_value = p_value
+  )
+  return(out)
+}
+
+# ------------------------------------------------------------
+# AFD (méthode anglo-saxonne P1) : diagonalise (B %*% solve(W))
+# Renvoie Un (vecteurs propres normalisés), valeurs propres, Scores, Wilks
+# ------------------------------------------------------------
+AFD <- function(X, Y, SS_tot, SS_intra, SS_inter, nb_axes = 2) {
+
+  Y <- as.factor(Y)
+  X <- as.data.frame(X)
+  X_mat <- as.matrix(X)
+
+  N <- nrow(X_mat)
+  P <- ncol(X_mat)
+  K <- length(levels(Y))
+
+  # 1) Ratio B/W = SS_inter %*% solve(SS_intra)
+  BW <- SS_inter %*% solve(SS_intra)
+
+  # 2) Diagonalisation
+  eig <- eigen(BW)
+  U <- Re(eig$vectors)           # vecteurs propres (partie réelle)
+  valeurs <- Re(eig$values)      # valeurs propres (partie réelle)
+
+  # 3) Normalisation : Un = U / sqrt(diag(t(U) %*% W %*% U))
+  denom <- sqrt(diag(t(U) %*% SS_intra %*% U))
+  Un <- sweep(U, 2, denom, "/")
+
+  # 4) Centrage Z = X - mean(X)
+  G <- colMeans(X_mat)
+  Z <- sweep(X_mat, 2, G, "-")
+
+  # 5) Scores (on prend nb_axes premiers axes)
+  Scores <- Z %*% Un[, 1:nb_axes, drop = FALSE]
+  Scores_df <- as.data.frame(Scores)
+  colnames(Scores_df) <- paste0("Axe_", 1:nb_axes)
+  Scores_df$Class <- Y
+
+  # 6) Inférence Wilks sur les axes sélectionnés
+  # corrélations canoniques : eta^2 = rho/(1+rho), avec rho = valeurs propres
+  rho <- valeurs[1:nb_axes]
+  eta2 <- rho / (1 + rho)
+  eta <- sqrt(pmax(eta2, 0))
+
+  # Wilks cumulée : Lambda_i = prod_{j=1..i} (1 - eta_j^2)
+  wilks <- cumprod(1 - eta^2)
+
+  # Stat chi2 corrigée pour chaque i
+  # -(n-1-(p+k)/2)*log(Lambda_i) ~ Chi2_{p(k-1)}
+  chi2_corr <- - (N - 1 - (P + K)/2) * log(wilks)
+  ddl <- P * (K - 1)
+  p_values <- 1 - pchisq(chi2_corr, df = ddl)
+
+  Wilks_df <- data.frame(
+    axe = 1:nb_axes,
+    rho = rho,
+    eta2 = eta2,
+    Wilks = wilks,
+    chi2_corr = chi2_corr,
+    ddl = ddl,
+    p_value = p_values
+  )
+
+  out <- list(
+    BW = BW,
+    U = U,
+    Un = Un,
+    valeurs_propres = valeurs,
+    Scores = Scores_df,
+    Wilks = Wilks_df
+  )
+  return(out)
+}
+
+# ------------------------------------------------------------
+# AFD_graph1 : Scatter Axe_1 vs Axe_2 + centres de gravité (losanges)
+# ------------------------------------------------------------
+AFD_graph1 <- function(Scores_df) {
+
+  G_centres <- aggregate(cbind(Axe_1, Axe_2) ~ Class, data = Scores_df, FUN = mean)
+
+  ggplot(Scores_df, aes(x = Axe_1, y = Axe_2, color = Class)) +
+    geom_point(size = 2, alpha = 0.9) +
+    geom_point(data = G_centres, aes(x = Axe_1, y = Axe_2, color = Class),
+               shape = 18, size = 6, inherit.aes = FALSE) +
+    theme_minimal()
+}
+```
+
+
+<FONT color='#0066CC'><FONT size = 4 >
+
+::: {align="center"}
+Fouille de données avec R pour la data science et l'intelligence artificielle\
+
+TD 4 : Partie II - ANALYSE FACTORIELLE DISCRIMINANTE   
+
+--Classification supervisée--
+:::
+
+</FONT></FONT>
+
+<FONT color='#0066CC'><FONT size = 4 >
+
+::: {align="center"}
+Badr TAJINI -- ESIEE Paris\
+Source : Bertrand Roudier -- ESIEE Paris
+:::
+
+</FONT></FONT>
+
+
+<hr style="border: 1px  solid gray">
+
+</hr>
+
+<DIV align = justify>
+
+<!--- /////////////////////////////////////////////////////////////////////--->
+### <FONT color='#0066CC'><FONT size = 4> 1. Introduction </FONT></FONT>
+
+Ce TD a pour objectif de réaliser la classification supervisée à l'aide de l'analyse factorielle discriminante.
+
+Dans le précédent TD, nous avons réalisé: 
+
+* Une diminution de dimension en calculant des axes de projections qui maximisent la dispersion inter groupe. Les vecteurs directeurs de ces axes factoriels correspondent aux vecteurs propres normalisés de la matrice : $\frac{B}{W}$ (méthode Anglo-saxone)   
+
+* Les statistiques inférentielles relatives à la discrimination des groupes selon les axes (tests de Wilks)
+
+* Le calcul des Scores. Ces derniers correspondent à la représentation des individus dans le plan formé par les (deux) premiers axes factoriels
+
+Dans ce TD final, nous allons réaliser une classification de chaque individu dans le plan factoriel. Pour y parvenir: 
+
+* Nous calculons le centre de gravité de chaque groupe dans le plan factoriel.
+* Pour chaque individu, nous calculons les distances le séparant des centres de chaque groupe.  
+* Nous affectons l'individu à la classe dont le centre de gravité est le plus proche.  
+
+Pour évaluer la  qualité de la méthode de classification, nous réalisons une matrice de confusion. 
+
+<U> **Rmq** </U>:  *Ce type de classification est possible que si la statistique montre préalablement l'existence significative d'une discrimination des groupes selon les axes factoriels*
+
+
+<!--- /////////////////////////////////////////////////////////////////////--->
+
+</FONT></FONT>
+
+<hr style="border: 1px  solid gray">
+
+</hr>
+
+### <FONT color='#0066CC'><FONT size = 4> 2. Prérequis </FONT></FONT>
+
+
+Nous effectuons la classification en reprenant dans un premier temps les données <VIN_QUALITES.txt>. Vous utiliserez les fonctions que vous avez développées dans le TD précédent (*MANOVA* et *AFD*)   
+Pour rappel, la fonction (*AFD* ) retourne une liste avec les Scores (coordonnées des individus sur les axes factoriels).
+
+
+```{r, echo = T, warning=F, message=F}
+# à compléter
+
+if (!require(caret)) {
+  install.packages("caret", repos = "https://cloud.r-project.org")
+  library(caret)
+}
+
+vin <- read.table("VIN_QUALITE.txt", header = TRUE)
+
+res_manova <- MANOVA(vin, "Qualite")
+
+X <- vin %>% select(where(is.numeric))
+Y <- vin$Qualite
+
+res_afd <- AFD(
+  X = X,
+  Y = Y,
+  SS_tot   = res_manova$SS_tot,
+  SS_intra = res_manova$SS_Intra,
+  SS_inter = res_manova$SS_Inter,
+  nb_axes  = 2
+)
+
+Scores_df <- res_afd$Scores
+
+
+```
+
+* La fonction permettant de réaliser le graphique est la suivante
+
+
+```{r, echo = T}
+# à compléter
+
+AFD_graph1
+
+
+```
+
+
+
+
+```{r}
+# à compléter
+
+AFD_graph1(Scores_df)
+
+
+```
+
+
+```{r}
+# à compléter
+
+str(Scores_df)
+
+
+```
+
+
+```{r, echo = F}
+# à compléter
+
+res_afd$Wilks
+
+```
+
+
+Les Scores sont les suivants: 
+
+
+```{r}
+# à compléter
+
+Scores_df
+
+```
+
+<!--- /////////////////////////////////////////////////////////////////////--->
+
+</FONT></FONT>
+
+<hr style="border: 1px  solid gray">
+
+</hr>
+<!--------------------------------------------------------------------->
+### <FONT color='#0066CC'><FONT size = 4> 3. Classification </FONT></FONT>
+
+<br>
+
+#### <FONT color='#0066CC'><FONT size = 4> 3.1 Centres de gravité </FONT></FONT>
+
+* Nous calculons les centres de gravité de chaque groupe dans le plan factoriel. Nous pouvons, par exemple utiliser la fonction *aggregate*.  
+
+```{r}
+# à compléter
+
+centres <- aggregate(cbind(Axe_1, Axe_2) ~ Class, data = Scores_df, FUN = mean)
+centres
+
+
+```
+
+<br>
+
+* La représentation des centres de gravité et des individus
+
+```{r}
+# à compléter
+
+ggplot(Scores_df, aes(x = Axe_1, y = Axe_2, color = Class)) +
+  geom_point(size = 2, alpha = 0.9) +
+  geom_point(
+    data = centres,
+    aes(x = Axe_1, y = Axe_2, color = Class),
+    shape = 18, size = 6, inherit.aes = FALSE
+  ) +
+  theme_minimal()
+
+
+```
+
+
+#### <FONT color='#0066CC'><FONT size = 4> 3.2 Distances </FONT></FONT>
+
+
+* Nous calculons les distances euclidiennes de chaque individu aux différents centre de gravité de chaque groupe.
+
+```{r}
+# à compléter
+
+classes <- as.character(centres$Class)
+
+dist_mat <- sapply(classes, function(cl) {
+  cx <- centres$Axe_1[centres$Class == cl]
+  cy <- centres$Axe_2[centres$Class == cl]
+  sqrt((Scores_df$Axe_1 - cx)^2 + (Scores_df$Axe_2 - cy)^2)
+})
+
+
+```
+
+<br>
+
+
+* Comme le montre la figure, L'affectation d'un individu correspond à la distance minimale entre cet individu et le centre de gravité d'un groupe (figure = groupe 3)
+
+
+<br>
+
+
+```{r, echo=FALSE, fig.width = 5, fig.height = 5, fig.align = 'center'}
+knitr::include_graphics('Distance.jpg')
+```
+
+
+<!------------------------------------------------------------------------->
+#### <FONT color='#0066CC'><FONT size = 4> 3.3 Classification </FONT></FONT>
+
+Le dataframe suivant compare la classification obtenue par l'AFD et les observations (Gold Standard)
+
+
+```{r}
+# à compléter
+
+pred_class <- classes[apply(dist_mat, 1, which.min)]
+
+comparaison <- data.frame(
+  Obs  = Scores_df$Class,
+  Pred = factor(pred_class, levels = levels(Scores_df$Class))
+)
+
+comparaison
+
+
+```
+
+#### <FONT color='#0066CC'><FONT size = 4> 3.4 Qualité </FONT></FONT>
+
+* Nous pouvons maintenant réaliser la matrice des confusions en utilisant la fonction *confusionMatrix* du package *caret*
+
+```{r, message =FALSE}
+# à compléter
+
+confusionMatrix(comparaison$Pred, comparaison$Obs)
+
+
+```
+
+<!------------------------------------------------------------------------->
+#### <FONT color='#0066CC'><FONT size = 4> 3.5 Encapsulation </FONT></FONT>
+
+* On construit une fonction ( que nous appelerons *AFD_Classif*) et qui "encapsule" le code 
+
+La fonction doit retourner :
+
+* les centre de gravités
+* les distances de chaque individus aux centre des classes (groupes)
+* la comparaison entre la classification réalisée par l'AFD et le gold standard
+* la matrice de confusion (obtenue à l'aide de la fonction caret)
+
+```{r}
+# à compléter
+
+AFD_Classif <- function(df, group_col, nb_axes = 2) {
+
+  df[[group_col]] <- as.factor(df[[group_col]])
+
+  res_manova <- MANOVA(df, group_col)
+
+  X <- df %>% select(where(is.numeric))
+  Y <- df[[group_col]]
+
+  res_afd <- AFD(
+    X = X, Y = Y,
+    SS_tot   = res_manova$SS_tot,
+    SS_intra = res_manova$SS_Intra,
+    SS_inter = res_manova$SS_Inter,
+    nb_axes  = nb_axes
+  )
+
+  Scores_df <- res_afd$Scores
+
+  centres <- aggregate(cbind(Axe_1, Axe_2) ~ Class, data = Scores_df, FUN = mean)
+  classes <- as.character(centres$Class)
+
+  dist_mat <- sapply(classes, function(cl) {
+    cx <- centres$Axe_1[centres$Class == cl]
+    cy <- centres$Axe_2[centres$Class == cl]
+    sqrt((Scores_df$Axe_1 - cx)^2 + (Scores_df$Axe_2 - cy)^2)
+  })
+
+  pred_class <- classes[apply(dist_mat, 1, which.min)]
+
+  comparaison <- data.frame(
+    Obs  = Scores_df$Class,
+    Pred = factor(pred_class, levels = levels(Scores_df$Class))
+  )
+
+  conf <- confusionMatrix(comparaison$Pred, comparaison$Obs)
+
+  list(
+    centres = centres,
+    dist_mat = dist_mat,
+    comparaison = comparaison,
+    confusion = conf
+  )
+}
+
+
+```
+
+<!--------------------------------------------------------------------->
+### <FONT color='#0066CC'><FONT size = 4> 4. Déploiement </FONT></FONT>
+
+* Pour déployer le code, on utilisera le fichier *iris* fournit par défaut  dans R
+
+```{r, echo = T}
+# à compléter
+
+res_iris <- AFD_Classif(iris, "Species", nb_axes = 2)
+
+
+```
+Les résultats sur le fichier *iris* sont les suivants
+
+* Centres de gravité
+
+```{r}
+# à compléter
+
+res_iris$centres
+
+```
+
+<br> 
+
+* Distances 
+
+
+```{r}
+# à compléter
+
+head(res_iris$dist_mat)
+
+```
+
+<br> 
+
+* Classification 
+
+
+```{r}
+# à compléter
+
+head(res_iris$comparaison)
+
+```
+
+* Confusion
+
+```{r}
+# à compléter
+
+res_iris$confusion
+
+```
+
+
